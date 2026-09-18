@@ -18,6 +18,7 @@
 #include "scriptmenu.h" // pulls in script.h (natives/types/enums/main) and keyboard.h
 #include "Log.h"
 #include "ChallengeCheat.h"
+#include "TimedRideHook.h"
 
 #include <array>
 #include <sstream>
@@ -97,7 +98,7 @@ namespace
 
 	void BuildMenu()
 	{
-		g_mainMenu = new MenuBase(new MenuItemTitle("ChallengeCheat"));
+		g_mainMenu = new MenuBase(new MenuItemTitle("Challenge Cheat"));
 
 		for (int i = 0; i < static_cast<int>(ChallengeCheat::Category::Count); i++)
 		{
@@ -116,12 +117,19 @@ void ScriptMain()
 
 	BuildMenu();
 
+	// Pay the AOB-scan + MinHook setup cost now, not on the first
+	// Horseman 3/6/9 click.
+	TimedRideHook::Initialize();
+
 	while (true)
 	{
 		if (!g_menuController.HasActiveMenu() && MenuInput::MenuSwitchPressed())
 			g_menuController.PushMenu(g_mainMenu);
 
 		g_menuController.Update();
+
+		// Tears down the timed-ride hook once it has fired (or timed out).
+		TimedRideHook::Update();
 
 		WAIT(0);
 	}

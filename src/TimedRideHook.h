@@ -36,12 +36,24 @@
 // This version fixes that: instead of patching an instruction
 // unconditionally, it hooks the whole function via MinHook (proper
 // trampoline generation, not hand-rolled) and inspects RDX itself. Only
-// when RDX matches the SPECIFIC goal currently being targeted (see
-// ScopedTimedRideUnlock) does it call `sub_140B9842C(a1)` -- the original
-// function's own unlock/fallback path -- then immediately disables the
-// hook before returning that result. Every other call (any other RDX, i.e.
-// any other goal, or no target set at all) passes straight through to the
-// real function, completely unaffected.
+// when RDX matches the SPECIFIC goal currently being targeted does it call
+// `sub_140B9842C(a1)` -- the original function's own unlock/fallback path.
+// Every other call (any other RDX, i.e. any other goal, or no target set
+// at all) passes straight through to the real function, unaffected.
+//
+// LIFETIME (fixed 2026-09-18): the engine only re-evaluates these goals on
+// its own periodic pass, well after the menu click that requested the
+// unlock has returned. An earlier version tied the hook's life to the
+// AdvanceRank()/CompleteChallenge() call itself (RAII) and tore it down as
+// that call returned (~35 ms later) -- before the engine ever called the
+// check -- so nothing ever matched. Now: Initialize() (script start) does
+// the signature scans and creates the hook disabled; Arm() on the button
+// press just targets + enables it, and it stays armed until the detour has
+// fired for its target (or a timeout expires); Update(), called every script
+// tick, then DISABLES it from the script thread. The hook stays created
+// until Uninstall(), so repeat clicks pay no scan/init cost. The detour
+// itself never tears anything down -- freeing the trampoline it is still
+// executing inside would be unsafe.
 namespace TimedRideHook
 {
 	using ChallengeState = void;
@@ -52,42 +64,25 @@ namespace TimedRideHook
 	using TimedRideChallengeCheckFn = char(__fastcall*)(ChallengeState* challengeState, TimedRideGoalIndex timedRideGoalIndex);
 	using UnlockChallengeFn = std::uint64_t(__fastcall*)(ChallengeState* challengeState);
 
-	// Fully removes the hook and uninitializes MinHook. Call exactly once,
-	// on module unload (DllMain's DLL_PROCESS_DETACH) -- MinHook is a
-	// process-wide library, not something to leave installed/initialized
-	// past this ASI's own lifetime.
+	// Resolves both signatures (two full-image AOB scans), initializes
+	// MinHook and creates the hook DISABLED. Call once from the script
+	// thread at startup so the scan cost isn't paid on a button press.
+	// Returns false if a signature wasn't found or MinHook failed; Arm()
+	// retries in that case.
+	bool Initialize();
+
+	// Targets one timed-ride goal index and enables the (already created)
+	// hook -- no scanning. Returns false (nothing left armed) if the hook
+	// couldn't be created or enabled. Re-arming while already armed just
+	// retargets.
+	bool Arm(TimedRideGoalIndex targetTimedRideGoalIndex);
+
+	// Call every script tick. Once the armed target has been unlocked, or
+	// the timeout has passed, DISABLES the hook (it stays created for the
+	// next Arm()). Cheap no-op when nothing is armed.
+	void Update();
+
+	// Full teardown (disable, remove, MH_Uninitialize). Call from DllMain's DLL_PROCESS_DETACH --
+	// MinHook is process-wide and shouldn't outlive this ASI.
 	void Uninstall();
-
-	// RAII: constructing an instance locates/creates the MinHook hook if
-	// needed, arms it for one timed-ride goal index, and enables it. The
-	// first call to sub_140BAC640 whose observed RDX equals
-	// `targetTimedRideGoalIndex` calls sub_140B9842C(a1), disables the hook,
-	// and returns that result. Every other RDX value passes straight
-	// through to the real function, unaffected. If no matching call arrives
-	// before the instance is destroyed, the destructor clears the target and
-	// disables the hook.
-	class ScopedTimedRideUnlock
-	{
-	public:
-		explicit ScopedTimedRideUnlock(TimedRideGoalIndex targetTimedRideGoalIndex);
-		~ScopedTimedRideUnlock();
-
-		bool IsReady() const;
-
-		ScopedTimedRideUnlock(const ScopedTimedRideUnlock&) = delete;
-		ScopedTimedRideUnlock& operator=(const ScopedTimedRideUnlock&) = delete;
-
-	private:
-		friend void Uninstall();
-
-		struct Runtime;
-
-		static Runtime& GetRuntime();
-		static bool CreateTimedRideChallengeCheckHook();
-		static bool EnableTimedRideChallengeCheckHook(TimedRideGoalIndex targetTimedRideGoalIndex);
-		static void DisableTimedRideChallengeCheckHook(const char* reason);
-		static char __fastcall TimedRideChallengeCheckDetour(ChallengeState* challengeState, TimedRideGoalIndex timedRideGoalIndex);
-
-		bool m_ready = false;
-	};
 }

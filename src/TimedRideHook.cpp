@@ -27,199 +27,208 @@ namespace
 
 namespace TimedRideHook
 {
-	struct ScopedTimedRideUnlock::Runtime
+	namespace
 	{
-		TimedRideChallengeCheckFn originalTimedRideChallengeCheck = nullptr;
-		UnlockChallengeFn unlockChallenge = nullptr;
-		void* timedRideChallengeCheckAddress = nullptr;
-		bool minHookInitialized = false;
-		bool timedRideChallengeCheckHookCreated = false;
-		std::atomic_bool timedRideChallengeCheckHookEnabled{ false };
+		// How long an armed hook waits for the engine's periodic
+		// re-evaluation to call the check with the target index before
+		// giving up and tearing itself down.
+		constexpr ULONGLONG kArmTimeoutMs = 15000;
 
-		// 0 = no target (every call passes through unaffected). Set/cleared
-		// by ScopedTimedRideUnlock. Written from the script thread
-		// (AdvanceRank), read from whatever thread calls sub_140BAC640 (the
-		// game's own update/tick thread, not the script thread) -- genuinely
-		// cross-thread, hence atomic rather than a plain field.
-		std::atomic<TimedRideGoalIndex> targetTimedRideGoalIndex{ 0 };
-	};
-
-	ScopedTimedRideUnlock::Runtime& ScopedTimedRideUnlock::GetRuntime()
-	{
-		static Runtime runtime;
-		return runtime;
-	}
-
-	void ScopedTimedRideUnlock::DisableTimedRideChallengeCheckHook(const char* reason)
-	{
-		Runtime& runtime = GetRuntime();
-		if (!runtime.timedRideChallengeCheckAddress)
-			return;
-
-		if (!runtime.timedRideChallengeCheckHookEnabled.exchange(false, std::memory_order_acq_rel))
-			return;
-
-		MH_STATUS status = MH_DisableHook(runtime.timedRideChallengeCheckAddress);
-		if (status != MH_OK && status != MH_ERROR_DISABLED)
+		struct Runtime
 		{
-			Log::Write("TimedRideHook: MH_DisableHook failed at {:#x} after {} ({})",
-				reinterpret_cast<std::uintptr_t>(runtime.timedRideChallengeCheckAddress), reason, MH_StatusToString(status));
-			runtime.timedRideChallengeCheckHookEnabled.store(true, std::memory_order_release);
-			return;
+			TimedRideChallengeCheckFn originalTimedRideChallengeCheck = nullptr;
+			UnlockChallengeFn unlockChallenge = nullptr;
+			void* timedRideChallengeCheckAddress = nullptr;
+			bool minHookInitialized = false;
+			bool hookCreated = false;
+			bool armed = false;
+			ULONGLONG armedAtMs = 0;
+
+			// 0 = no target (every call passes through unaffected). Written
+			// from the script thread, read from whatever thread calls
+			// sub_140BAC640 (the game's own update thread) -- genuinely
+			// cross-thread, hence atomic.
+			std::atomic<TimedRideGoalIndex> targetTimedRideGoalIndex{ 0 };
+			std::atomic_bool matched{ false };
+		};
+
+		Runtime& GetRuntime()
+		{
+			static Runtime runtime;
+			return runtime;
 		}
 
-		Log::Write("TimedRideHook: disabled timed-ride challenge-check hook after {}.", reason);
-	}
+		char __fastcall TimedRideChallengeCheckDetour(ChallengeState* challengeState, TimedRideGoalIndex timedRideGoalIndex)
+		{
+			Runtime& runtime = GetRuntime();
+			TimedRideGoalIndex targetGoalIndex = runtime.targetTimedRideGoalIndex.load(std::memory_order_acquire);
+			if (targetGoalIndex != 0 && timedRideGoalIndex == targetGoalIndex && runtime.unlockChallenge)
+			{
+				runtime.targetTimedRideGoalIndex.store(0, std::memory_order_release);
+				std::uint64_t result = runtime.unlockChallenge(challengeState);
+				runtime.matched.store(true, std::memory_order_release);
+				Log::Write("TimedRideHook: matched timed-ride goal index {:#x} (challengeState={:#x}) -- "
+					"called unlock-challenge function, returning {:#x}",
+					timedRideGoalIndex, reinterpret_cast<std::uintptr_t>(challengeState), result);
+				return static_cast<char>(result & 0xFF);
+			}
 
-	char __fastcall ScopedTimedRideUnlock::TimedRideChallengeCheckDetour(ChallengeState* challengeState, TimedRideGoalIndex timedRideGoalIndex)
-	{
-		Runtime& runtime = GetRuntime();
-		TimedRideGoalIndex targetGoalIndex = runtime.targetTimedRideGoalIndex.load(std::memory_order_acquire);
-		if (targetGoalIndex != 0 && timedRideGoalIndex == targetGoalIndex && runtime.unlockChallenge)
+			return runtime.originalTimedRideChallengeCheck(challengeState, timedRideGoalIndex);
+		}
+
+		bool CreateHook(Runtime& runtime)
+		{
+			if (runtime.hookCreated)
+				return true;
+
+			MH_STATUS initStatus = MH_Initialize();
+			if (initStatus != MH_OK && initStatus != MH_ERROR_ALREADY_INITIALIZED)
+			{
+				Log::Write("TimedRideHook: MH_Initialize failed ({})", MH_StatusToString(initStatus));
+				return false;
+			}
+			runtime.minHookInitialized = true;
+
+			auto checkAddr = PatternScan::FindInMainModule(kTimedRideChallengeCheckSignature);
+			if (!checkAddr)
+			{
+				Log::Write("TimedRideHook: timed-ride challenge-check signature not found (game build may have changed) -- not installed.");
+				return false;
+			}
+
+			auto unlockAddr = PatternScan::FindInMainModule(kUnlockChallengeSignature);
+			if (!unlockAddr)
+			{
+				Log::Write("TimedRideHook: unlock-challenge signature not found (game build may have changed) -- not installed.");
+				return false;
+			}
+
+			runtime.unlockChallenge = reinterpret_cast<UnlockChallengeFn>(*unlockAddr);
+			runtime.timedRideChallengeCheckAddress = reinterpret_cast<void*>(*checkAddr);
+
+			MH_STATUS createStatus = MH_CreateHook(
+				runtime.timedRideChallengeCheckAddress,
+				reinterpret_cast<void*>(&TimedRideChallengeCheckDetour),
+				reinterpret_cast<void**>(&runtime.originalTimedRideChallengeCheck));
+			if (createStatus != MH_OK)
+			{
+				Log::Write("TimedRideHook: MH_CreateHook failed at {:#x} ({})", *checkAddr, MH_StatusToString(createStatus));
+				runtime.timedRideChallengeCheckAddress = nullptr;
+				runtime.unlockChallenge = nullptr;
+				return false;
+			}
+
+			runtime.hookCreated = true;
+			Log::Write("TimedRideHook: created timed-ride challenge-check hook at {:#x} (RDR2.exe+{:#x}), "
+				"unlock-challenge function at {:#x} (RDR2.exe+{:#x})",
+				*checkAddr,
+				*checkAddr - reinterpret_cast<std::uintptr_t>(GetModuleHandle(nullptr)),
+				*unlockAddr,
+				*unlockAddr - reinterpret_cast<std::uintptr_t>(GetModuleHandle(nullptr)));
+			return true;
+		}
+
+		// Script-thread only. Disables the hook and clears the target but
+		// keeps it created, so the next Arm() is just an enable -- never
+		// call from the detour.
+		void Disarm(Runtime& runtime, const char* reason)
 		{
 			runtime.targetTimedRideGoalIndex.store(0, std::memory_order_release);
-			std::uint64_t result = runtime.unlockChallenge(challengeState);
-			DisableTimedRideChallengeCheckHook("target match");
-			Log::Write("TimedRideHook: matched timed-ride goal index {:#x} (challengeState={:#x}) -- "
-				"called unlock-challenge function, disabled hook, returning {:#x}",
-				timedRideGoalIndex, reinterpret_cast<std::uintptr_t>(challengeState), result);
-			return static_cast<char>(result & 0xFF);
+
+			if (runtime.hookCreated && runtime.timedRideChallengeCheckAddress)
+			{
+				MH_STATUS status = MH_DisableHook(runtime.timedRideChallengeCheckAddress);
+				if (status != MH_OK && status != MH_ERROR_DISABLED)
+					Log::Write("TimedRideHook: MH_DisableHook failed ({})", MH_StatusToString(status));
+			}
+
+			const bool wasArmed = runtime.armed;
+			runtime.armed = false;
+			runtime.matched.store(false, std::memory_order_release);
+
+			if (wasArmed)
+				Log::Write("TimedRideHook: disarmed ({}).", reason);
 		}
 
-		return runtime.originalTimedRideChallengeCheck(challengeState, timedRideGoalIndex);
-	}
-
-	bool ScopedTimedRideUnlock::CreateTimedRideChallengeCheckHook()
-	{
-		Runtime& runtime = GetRuntime();
-		if (runtime.timedRideChallengeCheckHookCreated)
-			return true;
-
-		MH_STATUS initStatus = MH_Initialize();
-		if (initStatus != MH_OK && initStatus != MH_ERROR_ALREADY_INITIALIZED)
+		// Script-thread only. Full removal + MinHook uninitialize.
+		void Teardown(Runtime& runtime, const char* reason)
 		{
-			Log::Write("TimedRideHook: MH_Initialize failed ({})", MH_StatusToString(initStatus));
-			return false;
-		}
-		runtime.minHookInitialized = true;
+			Disarm(runtime, reason);
 
-		auto timedRideChallengeCheckAddr = PatternScan::FindInMainModule(kTimedRideChallengeCheckSignature);
-		if (!timedRideChallengeCheckAddr)
-		{
-			Log::Write("TimedRideHook: timed-ride challenge-check signature not found (game build may have changed) -- not installed.");
-			return false;
-		}
+			if (runtime.hookCreated && runtime.timedRideChallengeCheckAddress)
+			{
+				MH_STATUS status = MH_RemoveHook(runtime.timedRideChallengeCheckAddress);
+				if (status != MH_OK && status != MH_ERROR_NOT_CREATED)
+					Log::Write("TimedRideHook: MH_RemoveHook failed ({})", MH_StatusToString(status));
+			}
 
-		auto unlockChallengeAddr = PatternScan::FindInMainModule(kUnlockChallengeSignature);
-		if (!unlockChallengeAddr)
-		{
-			Log::Write("TimedRideHook: unlock-challenge signature not found (game build may have changed) -- not installed.");
-			return false;
-		}
+			if (runtime.minHookInitialized)
+				MH_Uninitialize();
 
-		runtime.unlockChallenge = reinterpret_cast<UnlockChallengeFn>(*unlockChallengeAddr);
-		runtime.timedRideChallengeCheckAddress = reinterpret_cast<void*>(*timedRideChallengeCheckAddr);
-
-		MH_STATUS createStatus = MH_CreateHook(
-			runtime.timedRideChallengeCheckAddress,
-			reinterpret_cast<void*>(&ScopedTimedRideUnlock::TimedRideChallengeCheckDetour),
-			reinterpret_cast<void**>(&runtime.originalTimedRideChallengeCheck));
-		if (createStatus != MH_OK && createStatus != MH_ERROR_ALREADY_CREATED)
-		{
-			Log::Write("TimedRideHook: MH_CreateHook failed at {:#x} ({})",
-				*timedRideChallengeCheckAddr, MH_StatusToString(createStatus));
+			const bool wasCreated = runtime.hookCreated;
+			runtime.minHookInitialized = false;
+			runtime.hookCreated = false;
 			runtime.timedRideChallengeCheckAddress = nullptr;
+			runtime.originalTimedRideChallengeCheck = nullptr;
 			runtime.unlockChallenge = nullptr;
-			return false;
-		}
 
-		runtime.timedRideChallengeCheckHookCreated = true;
-		Log::Write("TimedRideHook: created timed-ride challenge-check hook at {:#x} (RDR2.exe+{:#x}), "
-			"unlock-challenge function at {:#x} (RDR2.exe+{:#x})",
-			*timedRideChallengeCheckAddr,
-			*timedRideChallengeCheckAddr - reinterpret_cast<std::uintptr_t>(GetModuleHandle(nullptr)),
-			*unlockChallengeAddr,
-			*unlockChallengeAddr - reinterpret_cast<std::uintptr_t>(GetModuleHandle(nullptr)));
-		return true;
+			if (wasCreated)
+				Log::Write("TimedRideHook: removed and uninitialized ({}).", reason);
+		}
 	}
 
-	bool ScopedTimedRideUnlock::EnableTimedRideChallengeCheckHook(TimedRideGoalIndex targetTimedRideGoalIndex)
+	bool Initialize()
+	{
+		return CreateHook(GetRuntime());
+	}
+
+	bool Arm(TimedRideGoalIndex targetTimedRideGoalIndex)
 	{
 		if (targetTimedRideGoalIndex == 0)
 		{
-			Log::Write("TimedRideHook: refusing to enable hook for invalid timed-ride goal index 0.");
+			Log::Write("TimedRideHook: refusing to arm for invalid timed-ride goal index 0.");
 			return false;
 		}
 
-		if (!CreateTimedRideChallengeCheckHook())
+		Runtime& runtime = GetRuntime();
+		// Normally a no-op (Initialize() ran at script start); retries the
+		// scan only if that attempt failed.
+		if (!CreateHook(runtime))
 			return false;
 
-		Runtime& runtime = GetRuntime();
+		runtime.matched.store(false, std::memory_order_release);
 		runtime.targetTimedRideGoalIndex.store(targetTimedRideGoalIndex, std::memory_order_release);
 
 		MH_STATUS enableStatus = MH_EnableHook(runtime.timedRideChallengeCheckAddress);
 		if (enableStatus != MH_OK && enableStatus != MH_ERROR_ENABLED)
 		{
-			runtime.targetTimedRideGoalIndex.store(0, std::memory_order_release);
-			Log::Write("TimedRideHook: MH_EnableHook failed at {:#x} for timed-ride goal index {:#x} ({})",
-				reinterpret_cast<std::uintptr_t>(runtime.timedRideChallengeCheckAddress),
-				targetTimedRideGoalIndex,
-				MH_StatusToString(enableStatus));
+			Log::Write("TimedRideHook: MH_EnableHook failed for timed-ride goal index {:#x} ({})",
+				targetTimedRideGoalIndex, MH_StatusToString(enableStatus));
+			Disarm(runtime, "enable failure");
 			return false;
 		}
 
-		runtime.timedRideChallengeCheckHookEnabled.store(true, std::memory_order_release);
-		Log::Write("TimedRideHook: enabled for timed-ride goal index {:#x}.", targetTimedRideGoalIndex);
+		runtime.armed = true;
+		runtime.armedAtMs = GetTickCount64();
+		Log::Write("TimedRideHook: armed for timed-ride goal index {:#x} (waiting up to {} ms for the engine's next check).",
+			targetTimedRideGoalIndex, kArmTimeoutMs);
 		return true;
+	}
+
+	void Update()
+	{
+		Runtime& runtime = GetRuntime();
+		if (!runtime.armed)
+			return;
+
+		if (runtime.matched.load(std::memory_order_acquire))
+			Disarm(runtime, "target unlocked");
+		else if (GetTickCount64() - runtime.armedAtMs > kArmTimeoutMs)
+			Disarm(runtime, "timed out without the engine checking the target goal");
 	}
 
 	void Uninstall()
 	{
-		ScopedTimedRideUnlock::Runtime& runtime = ScopedTimedRideUnlock::GetRuntime();
-		runtime.targetTimedRideGoalIndex.store(0, std::memory_order_release);
-		ScopedTimedRideUnlock::DisableTimedRideChallengeCheckHook("module unload");
-
-		if (runtime.timedRideChallengeCheckHookCreated && runtime.timedRideChallengeCheckAddress)
-		{
-			MH_STATUS status = MH_RemoveHook(runtime.timedRideChallengeCheckAddress);
-			if (status != MH_OK && status != MH_ERROR_NOT_CREATED)
-			{
-				Log::Write("TimedRideHook: MH_RemoveHook failed at {:#x} ({})",
-					reinterpret_cast<std::uintptr_t>(runtime.timedRideChallengeCheckAddress), MH_StatusToString(status));
-			}
-		}
-
-		if (runtime.minHookInitialized)
-		{
-			MH_Uninitialize();
-		}
-
-		runtime.minHookInitialized = false;
-		runtime.timedRideChallengeCheckHookCreated = false;
-		runtime.timedRideChallengeCheckHookEnabled.store(false, std::memory_order_release);
-		runtime.timedRideChallengeCheckAddress = nullptr;
-		runtime.originalTimedRideChallengeCheck = nullptr;
-		runtime.unlockChallenge = nullptr;
-		Log::Write("TimedRideHook: uninstalled.");
-	}
-
-	ScopedTimedRideUnlock::ScopedTimedRideUnlock(TimedRideGoalIndex targetTimedRideGoalIndex)
-		: m_ready(EnableTimedRideChallengeCheckHook(targetTimedRideGoalIndex))
-	{
-	}
-
-	ScopedTimedRideUnlock::~ScopedTimedRideUnlock()
-	{
-		if (!m_ready)
-			return;
-
-		Runtime& runtime = GetRuntime();
-		runtime.targetTimedRideGoalIndex.store(0, std::memory_order_release);
-		DisableTimedRideChallengeCheckHook("scoped timed-ride unlock ended without a target match");
-	}
-
-	bool ScopedTimedRideUnlock::IsReady() const
-	{
-		return m_ready;
+		Teardown(GetRuntime(), "module unload");
 	}
 }

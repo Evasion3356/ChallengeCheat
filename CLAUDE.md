@@ -144,8 +144,7 @@ regardless.
   directly on a distinct pool item per rank. The 10th compendium goal
   (`ACW_HORSE_Rank_10_Arabian`) is commented out in the real
   `challenges_sp.meta` and isn't required by any live rank, so it's moot.
-  Still genuinely unsupported: the 4 group-stat goals. See the coverage
-  table below.
+  (The 4 group-stat goals were later resolved -- see the 1.0 status below.)
 
 `src/ChallengeCheat.cpp`'s `kKnownWrites` table (226 rows) was generated
 by parsing both real meta files with Python (`xml.etree.ElementTree`):
@@ -165,15 +164,60 @@ still unverified):
 
 | Category | Coverage |
 | --- | --- |
-| Bandit | full 1-10 |
-| Gambler | full 1-10 |
-| Survivalist | full 1-10 |
-| Weapons Expert | full 1-10 |
-| Explorer | full 1-10 (ranks 2-10 via `WriteKind::Collectable`, see below) -- **builds clean 2026-09-18, not yet live-tested** |
-| Sharpshooter | blocked at rank 2 (mixed group-stat) |
-| Master Hunter | blocked at rank 3 (group-stat) |
-| Horseman | full 1-10 (ranks 3/6/9 via `TimedRideHook`; rank 10 via `WriteKind::HorseCompendium`, both below) -- **all of ranks 1-10 CONFIRMED LIVE 2026-09-17 night / 2026-09-19, pre-refactor; not yet re-tested post-refactor** |
-| Herbalist | blocked at rank 6 (group-stat) |
+| Bandit, Explorer, Gambler, Herbalist, Horseman, Master Hunter, Sharpshooter, Survivalist | full 1-10, **all CONFIRMED LIVE via Advance (1.0)** |
+| Weapons Expert | full 1-10, live-tested (1.0) |
+
+**1.0 status (2026-09-18): every category covers ranks 1-10 and was
+live-tested.** The group-stat gaps in the older text below were closed:
+Herbalist 6/9 (15 distinct / all 43 herbs, `PICK/HERB_*`, names from
+`beat_friendly_outdoorsman.ysc.c`'s `func_363`), Master Hunter 3 (12
+`TRACKED/AT_<animal>`, gated on `CHAL_CTX_SCOPED_KIT` via
+`SCRIPT::_IS_GOAL_CONTEXT_ACTIVE`), Sharpshooter 2 (`KILLED/AT_<animal>`
+distinct + `KILLS/DEADEYE` bind, Dead Eye gate). Animal/herb group
+membership isn't in either meta file; the names are informed guesses that
+worked live.
+
+**Write kinds beyond plain `Stat`** (all in `kKnownWrites`; pick by how
+the goal's real `<scoreParam>` behaves, not by guessing):
+- `StatSum` -- IntSum (completeAll=false): Step credits only the goal's
+  first row per click (+1 on every row would be +N total). Rows that only
+  BIND/gate a goal (e.g. Hunter 6's `KILLS/SN_BOW`) stay plain `Stat` so
+  Step always writes them -- `CHECK_FOR_SCORE_WHEN_BIND_PROGRESS` needs the
+  bind stat to move.
+- `StatDistinct` -- goals that count DISTINCT items (group sum of a
+  capped template, or IntSum completeAll=true): Step credits one item per
+  click via an in-memory per-goal counter (not persisted; Complete finishes
+  after a restart). The goal only counts picks made after it activated, so
+  never skip a stat because its current value is already >= 1.
+- `StatAtOnce` -- records / expiring reset windows (biggest fish, Weapons
+  Expert 6): no usable partial step, Step applies the full value like
+  Complete.
+- `HorseCompendium` Step credits one breed per click, preferring the
+  game's own `CHAL_IS_GOAL_ACTIVE` per-breed state, else a counter.
+- Bind behavior `CHECK_FOR_SCORE_WHEN_BIND_NOT_PROGRESS` (Sharpshooter
+  1/3): the bind stat (`KILLED/AT_BAT`) must NOT be written.
+- Advance with nothing left to credit returns a visible failure reason
+  instead of silently doing nothing.
+
+**Category unlock:** on a new game a category root is hidden/locked and its
+goals inactive (`CHAL_IS_GOAL_ACTIVE` false), so writes do nothing.
+`ApplyRankProgress` calls `UNLOCK_SET_VISIBLE`/`UNLOCK_SET_UNLOCKED` on the
+root first (what story scripts do) and waits 250 ms.
+
+**`TimedRideHook` lifetime (1.0):** `Arm()` on the button press, stays armed
+until the engine's check fires for the target RDX (or 15 s), then
+`Update()` (every script tick) disables + removes + uninitializes on the
+script thread. The old RAII scope tore it down ~35 ms after the click,
+before the engine's periodic pass -- broke Horseman 3/6/9 once Advance
+became fire-and-forget. Live-confirmed 3/6/9 individually.
+
+**Live gates:** OnMount, OnMovingTrain, DeadeyeActive (must be aiming with
+Dead Eye already on -- scripted activation drops right off; never toggle
+it, Sharpshooter 2/9 reset on activation changes), ScopedKit.
+
+Every `ApplyRankProgress` also logs the rank counter and each goal's
+`CHAL_IS_GOAL_ACTIVE` before writing -- the first thing to read when a
+rank "does nothing".
 
 **Horseman ranks 3/6/9 (`ACW_HORSE_Rank_{03,06,09}_TimedRide`) -- no
 native/script mechanism, but a real one found anyway (2026-09-17).**
@@ -469,6 +513,15 @@ does a scoped binary patch of the actual native function.
   `[General] MenuKey` (default `F9`), read by `MenuInput::MenuSwitchPressed`.
   Loaded lazily on first `Get()` from the script thread, NOT from `DllMain`
   (MenuKey parsing calls `VkKeyScanW`).
+  **INI behavior:** `Config::Reload()` parses the file (missing file/key ->
+  defaults), resolves each value, then REWRITES the file with the resolved
+  values, so a bad `MenuKey` is corrected on disk and the file is created on
+  first use. There is no hot reload -- `Reload()` runs once, on the first
+  `Get()`; edits need a game restart. Any exception during load is logged and
+  the previous values kept. To add a setting: add a field to `Config::Values`,
+  read/validate it in `ReloadImpl()` (falling back to the default and logging
+  on bad input), write the resolved value back to its section, and mirror it
+  in the Nexus description's Configuration section and `docs/CHANGELOG.md`.
 - `src/KeyNames.h`/`.cpp` -- keycap-style key name <-> VK parser for
   `MenuKey`: F1-F24, A-Z/0-9, NUMPAD*, named keys with keycap aliases
   (PAGEDOWN/PGDN, not VK_NEXT), and single unshifted punctuation chars via
@@ -565,53 +618,15 @@ does a scoped binary patch of the actual native function.
 
 ## Next concrete step
 
-1. **Re-live-test `TimedRideHook` through the mod's own `AdvanceRank()`
-   flow post-refactor** (Horseman ranks 3, then 6, then 9). This full
-   path (not just the underlying hook mechanism) WAS confirmed live
-   2026-09-17 night, pre-`04504c7` refactor -- ranks 1-10 all worked,
-   including 3/6/9 individually with no cross-completion. The refactor
-   didn't touch the hook's core logic, so this is expected to still
-   work, but hasn't been re-verified in game since.
-2. **Live-test the new `OnMovingTrain` gate** (Sharpshooter rank 3, via
-   `PLAYER::IS_PLAYER_RIDING_TRAIN`, added 2026-09-18) -- builds clean,
-   never run in game yet.
-3. **Confirm real reward-grant, not just the rank counter/pause-menu
-   display**: Bandit ranks 3-10, Gambler, and Herbalist have all been
-   live-confirmed to advance the rank counter correctly, but whether the
-   actual reward (item/recipe/cosmetic) is granted alongside a
-   cheat-driven completion hasn't been independently checked yet -- worth
-   checking for a `TimedRideHook`-completed rank too, since bypassing the
-   engine's own completion check entirely is a bigger leap than any other
-   write this mod does.
-4. Live-test Survivalist and Weapons Expert (the other two categories
-   with full 1-10 coverage).
-5. Live-test the new Explorer `WriteKind::Collectable` rows (ranks 2-10,
-   via `COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND`, added 2026-09-18)
-   -- builds clean, never run in game yet.
-6. Check the categories that still hit a real ceiling (Sharpshooter at
-   rank 2 -- mixed group-stat, and Master Hunter at rank 3 -- group-stat)
-   stop exactly there rather than silently skipping past the unsupported
-   one -- confirms the "Linear means sequential" assumption this whole
-   ceiling table rests on. (Sharpshooter ranks 3 and 9 are individually
-   supported and gated -- `OnMovingTrain`/`DeadeyeActive` -- but moot
-   until rank 2 is resolved, since Linear presumably requires reaching
-   rank 2 first.)
-7. Find a native check for the one remaining live `Requirement` type
-   without one (`DeadeyeActive` -- `CAIConditionPlayerIsDeadeyeActive`)
-   so Sharpshooter rank 9 gets the same pre-check/message treatment
-   `OnMount` and `OnMovingTrain` already have, instead of just a log NOTE
-   and a possibly-silent failure.
-8. Growing coverage past the remaining 4 genuinely unsupported goals (all
-   `StatsGoalScoreSourceGroupStat`: Sharpshooter rank 2
-   `ACW_SHOT_Rank_02_Animals`, Master Hunter rank 3
-   `ACW_HUNT_Rank_03_Binoculars`, Herbalist rank 6
-   `ACW_HERB_Rank_06_PickingHerbs` and rank 9 `ACW_HERB_Rank_09_AllHerbs`)
-   needs finding where a named stat GROUP's membership list is defined --
-   not in either real meta file. (The 3 Horseman timed rides,
-   9 of the 10 Horseman compendium goals, and the 9 Explorer
-   item-collection-list goals are no longer in this bucket -- see
-   `TimedRideHook`, `WriteKind::HorseCompendium`, and
-   `WriteKind::Collectable` above. The 10th compendium goal,
-   `ACW_HORSE_Rank_10_Arabian`, is commented out in the real
-   `challenges_sp.meta` and isn't required by any live rank, so it's not
-   worth chasing.)
+Everything in ranks 1-10 is live-tested as of 1.0. Remaining:
+
+1. **Confirm real reward-grant**, not just the rank counter/pause-menu
+   display -- whether the item/recipe/cosmetic is granted for a
+   cheat-driven completion (biggest question for the timed-ride hook, which
+   bypasses the engine's own completion check).
+2. Make Advance's per-goal counters (`StatDistinct`, `HorseCompendium`)
+   survive a game restart if that ever proves annoying (currently
+   Complete covers it).
+3. Consider `StatAtOnce` for other short-window reset goals if Advance
+   feels wrong (Weapons Expert 2 has a 10 s window; Horseman 2 a 15 s
+   one and was fine live).

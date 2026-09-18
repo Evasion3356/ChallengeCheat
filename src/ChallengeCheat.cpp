@@ -150,6 +150,10 @@
 #include "..\external\RDR-Classes\rage\joaat.hpp"
 
 #include <cstddef>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
 #include <optional>
 
 namespace
@@ -197,6 +201,9 @@ namespace
 	enum class WriteKind
 	{
 		Stat,            // write baseId/permId's real named stat directly
+		StatAtOnce,      // like Stat, but the goal has no usable partial step (a record like biggest fish, or a progress window that expires and resets) -- Step applies the full value, same as Complete
+		StatSum,         // like Stat, but the goal SUMS several stats toward one target (IntSum, completeAll=false) -- Step credits only the goal's first row per click; Complete writes every row's full value
+		StatDistinct,    // like Stat, but the goal counts DISTINCT stats reaching 1 (group-sum of a capped template) -- Step credits ONE not-yet-picked row per click; Complete writes them all
 		ScriptGoal,      // write the goal's own name via CHAL_ADD_GOAL_PROGRESS_INT
 		PointToPointHook, // scoped binary patch of the native completion check -- see TimedRideHook.h
 		HorseCompendium, // spawn modelHash's breed ped, call COMPENDIUM_HORSE_WILD_BROKEN, delete it
@@ -216,7 +223,8 @@ namespace
 		None,
 		OnMount,       // CAIConditionIsOnMount -- checked live via PED::IS_PED_ON_MOUNT
 		OnMovingTrain, // CAIConditionGoalContext (CHAL_CTX_ON_MOVING_TRAIN) -- checked via PLAYER::IS_PLAYER_RIDING_TRAIN
-		DeadeyeActive, // CAIConditionPlayerIsDeadeyeActive -- no native check found yet, logged as a note only
+		ScopedKit,     // CAIConditionGoalContext (CHAL_CTX_SCOPED_KIT) -- checked via SCRIPT::_IS_GOAL_CONTEXT_ACTIVE
+		DeadeyeActive, // CAIConditionPlayerIsDeadeyeActive -- checked via PLAYER::_IS_SPECIAL_ABILITY_ACTIVE + aiming
 	};
 
 	// Step: advance the CURRENT rank's goal(s) by one small increment (e.g.
@@ -278,6 +286,11 @@ namespace
 			verb, categoryInfo.displayName, write.baseId, write.permId, write.label, targetRank, value, ok ? "ok" : "FAILED", readback);
 	}
 
+	// WriteKind::StatDistinct Step bookkeeping: how many of a goal's rows
+	// Advance has credited so far this session, keyed by goal name. Not
+	// persisted -- after a restart mid-rank, Complete finishes the rank.
+	std::map<std::string, int> g_distinctStepsCredited;
+
 	// Auto-generated from the REAL challenges_sp.meta + goals_sp.meta
 	// (extracted from update_1.rpf, NOT the fake mod copy -- see this
 	// file's header comment). 226 write rows covering 130 of 138 goals
@@ -286,11 +299,11 @@ namespace
 	// hand-added Collectable rows for Explorer ranks 2-10 -- see below).
 	constexpr KnownWrite kKnownWrites[] = {
 		{ Category::Bandit, 1, WriteKind::Stat, "ACW_BAND_Rank_01_Townsfolk", "HOLD_UPS_IN_TOWN", "", 5.000000f, false },
-		{ Category::Bandit, 2, WriteKind::Stat, "ACW_BAND_Rank_02_CoachRobberies", "", "AMBIENT_COACH_ROBBED", 2.000000f, false },
-		{ Category::Bandit, 2, WriteKind::Stat, "ACW_BAND_Rank_02_CoachRobberies", "STOLEN_WAGONS_SOLD", "", 2.000000f, false },
+		{ Category::Bandit, 2, WriteKind::StatSum, "ACW_BAND_Rank_02_CoachRobberies", "", "AMBIENT_COACH_ROBBED", 2.000000f, false },
+		{ Category::Bandit, 2, WriteKind::StatSum, "ACW_BAND_Rank_02_CoachRobberies", "STOLEN_WAGONS_SOLD", "", 2.000000f, false },
 		{ Category::Bandit, 3, WriteKind::Stat, "ACW_BAND_Rank_03_ShopRobberies", "CASH_REGISTERS_ROBBED", "", 4.000000f, false },
-		{ Category::Bandit, 4, WriteKind::Stat, "ACW_BAND_Rank_04_CoachesRobbedInADay", "", "AMBIENT_COACH_ROBBED", 3.000000f, false },
-		{ Category::Bandit, 4, WriteKind::Stat, "ACW_BAND_Rank_04_CoachesRobbedInADay", "STOLEN_WAGONS_SOLD", "", 3.000000f, false },
+		{ Category::Bandit, 4, WriteKind::StatSum, "ACW_BAND_Rank_04_CoachesRobbedInADay", "", "AMBIENT_COACH_ROBBED", 3.000000f, false },
+		{ Category::Bandit, 4, WriteKind::StatSum, "ACW_BAND_Rank_04_CoachesRobbedInADay", "STOLEN_WAGONS_SOLD", "", 3.000000f, false },
 		{ Category::Bandit, 5, WriteKind::Stat, "ACW_BAND_Rank_05_HighestBounty", "HIGHEST_BOUNTY", "", 25000.000000f, false },
 		{ Category::Bandit, 6, WriteKind::Stat, "ACW_BAND_Rank_06_HorsesFenced", "STOLEN_HORSES_SOLD", "", 5.000000f, false },
 		{ Category::Bandit, 7, WriteKind::Stat, "ACW_BAND_Rank_07_StealCash", "HOLD_UP_CASH", "CIVILIAN", 5000.000000f, false },
@@ -341,60 +354,125 @@ namespace
 		{ Category::Gambler, 7, WriteKind::ScriptGoal, "ACW_GAMB_Rank_07_FiveFinger_VAL", "", "", 1.000000f, false },
 		{ Category::Gambler, 7, WriteKind::ScriptGoal, "ACW_GAMB_Rank_07_FiveFinger_VAN", "", "", 1.000000f, false },
 		{ Category::Gambler, 8, WriteKind::Stat, "ACW_GAMB_Rank_08_Blackjack", "WINS", "BLACKJACK_4_HITS", 3.000000f, false },
-		{ Category::Gambler, 9, WriteKind::Stat, "ACW_GAMB_Rank_09_Dominoes", "WIN_STREAK", "DOMINOES_GAME", 3.000000f, false },
-		{ Category::Gambler, 10, WriteKind::Stat, "ACW_GAMB_Rank_10_PokerHands", "WIN_STREAK", "POKER_HAND", 3.000000f, false },
+		{ Category::Gambler, 9, WriteKind::StatAtOnce, "ACW_GAMB_Rank_09_Dominoes", "WIN_STREAK", "DOMINOES_GAME", 3.000000f, false },
+		{ Category::Gambler, 10, WriteKind::StatAtOnce, "ACW_GAMB_Rank_10_PokerHands", "WIN_STREAK", "POKER_HAND", 3.000000f, false },
 		{ Category::Herbalist, 1, WriteKind::Stat, "ACW_HERB_Rank_01_Yarrow", "PICK", "HERB_YARROW", 6.000000f, false },
-		{ Category::Herbalist, 2, WriteKind::Stat, "ACW_HERB_Rank_02_Berries", "EATEN", "HERB_BLACK_BERRY", 1.000000f, false },
-		{ Category::Herbalist, 2, WriteKind::Stat, "ACW_HERB_Rank_02_Berries", "EATEN", "HERB_EVERGREEN_HUCKLEBERRY", 1.000000f, false },
-		{ Category::Herbalist, 2, WriteKind::Stat, "ACW_HERB_Rank_02_Berries", "EATEN", "HERB_RED_RASPBERRY", 1.000000f, false },
-		{ Category::Herbalist, 2, WriteKind::Stat, "ACW_HERB_Rank_02_Berries", "EATEN", "HERB_WINTERGREEN_BERRY", 1.000000f, false },
-		{ Category::Herbalist, 3, WriteKind::Stat, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_POTENT_HORSE_STIMULANT", 7.000000f, false },
-		{ Category::Herbalist, 3, WriteKind::Stat, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_SPECIAL_HORSE_STIMULANT_CRAFTED", 7.000000f, false },
-		{ Category::Herbalist, 3, WriteKind::Stat, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_HORSE_OINTMENT_CRAFTED", 7.000000f, false },
-		{ Category::Herbalist, 3, WriteKind::Stat, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_POTENT_RESTORATIVE", 7.000000f, false },
-		{ Category::Herbalist, 3, WriteKind::Stat, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_SPECIAL_RESTORATIVE_CRAFTED", 7.000000f, false },
-		{ Category::Herbalist, 3, WriteKind::Stat, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_POTENT_TONIC", 7.000000f, false },
+		{ Category::Herbalist, 2, WriteKind::StatDistinct, "ACW_HERB_Rank_02_Berries", "EATEN", "HERB_BLACK_BERRY", 1.000000f, false },
+		{ Category::Herbalist, 2, WriteKind::StatDistinct, "ACW_HERB_Rank_02_Berries", "EATEN", "HERB_EVERGREEN_HUCKLEBERRY", 1.000000f, false },
+		{ Category::Herbalist, 2, WriteKind::StatDistinct, "ACW_HERB_Rank_02_Berries", "EATEN", "HERB_RED_RASPBERRY", 1.000000f, false },
+		{ Category::Herbalist, 2, WriteKind::StatDistinct, "ACW_HERB_Rank_02_Berries", "EATEN", "HERB_WINTERGREEN_BERRY", 1.000000f, false },
+		{ Category::Herbalist, 3, WriteKind::StatSum, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_POTENT_HORSE_STIMULANT", 7.000000f, false },
+		{ Category::Herbalist, 3, WriteKind::StatSum, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_SPECIAL_HORSE_STIMULANT_CRAFTED", 7.000000f, false },
+		{ Category::Herbalist, 3, WriteKind::StatSum, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_HORSE_OINTMENT_CRAFTED", 7.000000f, false },
+		{ Category::Herbalist, 3, WriteKind::StatSum, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_POTENT_RESTORATIVE", 7.000000f, false },
+		{ Category::Herbalist, 3, WriteKind::StatSum, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_SPECIAL_RESTORATIVE_CRAFTED", 7.000000f, false },
+		{ Category::Herbalist, 3, WriteKind::StatSum, "ACW_HERB_Rank_03_SageCrafting", "MADE", "CONSUMABLE_POTENT_TONIC", 7.000000f, false },
 		{ Category::Herbalist, 4, WriteKind::Stat, "ACW_HERB_Rank_04_FeedMushrooms", "", "HORSE_FED_MUSHROOM", 5.000000f, false },
-		{ Category::Herbalist, 5, WriteKind::Stat, "ACW_HERB_Rank_05_TobaccoCrafting", "MADE", "CONSUMABLE_POTENT_SNAKE_OIL", 9.000000f, false },
-		{ Category::Herbalist, 5, WriteKind::Stat, "ACW_HERB_Rank_05_TobaccoCrafting", "MADE", "CONSUMABLE_SPECIAL_SNAKE_OIL_CRAFTED", 9.000000f, false },
-		{ Category::Herbalist, 5, WriteKind::Stat, "ACW_HERB_Rank_05_TobaccoCrafting", "MADE", "CONSUMABLE_POTENT_TONIC", 9.000000f, false },
+		{ Category::Herbalist, 5, WriteKind::StatSum, "ACW_HERB_Rank_05_TobaccoCrafting", "MADE", "CONSUMABLE_POTENT_SNAKE_OIL", 9.000000f, false },
+		{ Category::Herbalist, 5, WriteKind::StatSum, "ACW_HERB_Rank_05_TobaccoCrafting", "MADE", "CONSUMABLE_SPECIAL_SNAKE_OIL_CRAFTED", 9.000000f, false },
+		{ Category::Herbalist, 5, WriteKind::StatSum, "ACW_HERB_Rank_05_TobaccoCrafting", "MADE", "CONSUMABLE_POTENT_TONIC", 9.000000f, false },
+		// Rank 6 is an IntGroupSum over the "Herbs" PICK group whose template param
+		// caps each herb at 1 (allowOverflowProgression=false), so its target of 15 means
+		// 15 DIFFERENT herbs picked, not 15 picks (same shape as Horseman rank 10's
+		// per-breed goals). One PICK on each of 15 distinct herbs satisfies it. The herb
+		// names come from beat_friendly_outdoorsman.ysc.c's func_363 index->name switch
+		// (43 herbs total, all used for rank 9 below).
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_YARROW", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_ACUNAS_STAR_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_ALASKAN_GINSENG", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_AMERICAN_GINSENG", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_BAY_BOLETE", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_BLACK_BERRY", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_BLACK_CURRANT", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_BURDOCK_ROOT", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_CHANTERELLES", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_CIGAR_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_CLAMSHELL_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_COMMON_BULRUSH", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_CREEPING_THYME", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_DESERT_SAGE", 1.000000f, false },
+		{ Category::Herbalist, 6, WriteKind::StatDistinct, "ACW_HERB_Rank_06_PickingHerbs", "PICK", "HERB_DRAGONS_MOUTH_ORCHID", 1.000000f, false },
 		{ Category::Herbalist, 7, WriteKind::Stat, "ACW_HERB_Rank_07_CraftSpecialTonic", "MADE", "CONSUMABLE_SPECIAL_TONIC_CRAFTED", 5.000000f, false },
 		{ Category::Herbalist, 7, WriteKind::Stat, "ACW_HERB_Rank_07_UseSpecialTonic", "USED", "SPECIAL_TONIC", 5.000000f, false },
-		{ Category::Herbalist, 8, WriteKind::Stat, "ACW_HERB_Rank_08_PoisonWeapons", "MADE", "AMMO_ARROW_POISON", 6.000000f, false },
-		{ Category::Herbalist, 8, WriteKind::Stat, "ACW_HERB_Rank_08_PoisonWeapons", "MADE", "AMMO_THROWING_KNIVES_POISON", 6.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_ExoticBirdSeasoning", "COOKED", "CONSUMABLE_EXOTIC_BIRD_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_ExoticBirdSeasoning", "COOKED", "CONSUMABLE_EXOTIC_BIRD_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_ExoticBirdSeasoning", "COOKED", "CONSUMABLE_EXOTIC_BIRD_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_TenderPorkSeasoning", "COOKED", "CONSUMABLE_TENDER_PORK_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_TenderPorkSeasoning", "COOKED", "CONSUMABLE_TENDER_PORK_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_TenderPorkSeasoning", "COOKED", "CONSUMABLE_TENDER_PORK_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_PlumpBirdSeasoning", "COOKED", "CONSUMABLE_PLUMP_BIRD_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_PlumpBirdSeasoning", "COOKED", "CONSUMABLE_PLUMP_BIRD_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_PlumpBirdSeasoning", "COOKED", "CONSUMABLE_PLUMP_BIRD_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_BigGameMeatSeasoning", "COOKED", "CONSUMABLE_BIG_GAME_MEAT_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_BigGameMeatSeasoning", "COOKED", "CONSUMABLE_BIG_GAME_MEAT_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_BigGameMeatSeasoning", "COOKED", "CONSUMABLE_BIG_GAME_MEAT_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_PrimeBeefSeasoning", "COOKED", "CONSUMABLE_PRIME_BEEF_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_PrimeBeefSeasoning", "COOKED", "CONSUMABLE_PRIME_BEEF_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_PrimeBeefSeasoning", "COOKED", "CONSUMABLE_PRIME_BEEF_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_SucculentFishSeasoning", "COOKED", "CONSUMABLE_SUCCULENT_FISH_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_SucculentFishSeasoning", "COOKED", "CONSUMABLE_SUCCULENT_FISH_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_SucculentFishSeasoning", "COOKED", "CONSUMABLE_SUCCULENT_FISH_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_GameMeatSeasoning", "COOKED", "CONSUMABLE_GAME_MEAT_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_GameMeatSeasoning", "COOKED", "CONSUMABLE_GAME_MEAT_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_GameMeatSeasoning", "COOKED", "CONSUMABLE_GAME_MEAT_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_FlakeyFishSeasoning", "COOKED", "CONSUMABLE_FLAKEY_FISH_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_FlakeyFishSeasoning", "COOKED", "CONSUMABLE_FLAKEY_FISH_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_FlakeyFishSeasoning", "COOKED", "CONSUMABLE_FLAKEY_FISH_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_CrustaceanMeatSeasoning", "COOKED", "CONSUMABLE_CRUSTACEAN_MEAT_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_CrustaceanMeatSeasoning", "COOKED", "CONSUMABLE_CRUSTACEAN_MEAT_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_CrustaceanMeatSeasoning", "COOKED", "CONSUMABLE_CRUSTACEAN_MEAT_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_GristlyMuttonSeasoning", "COOKED", "CONSUMABLE_GRISTLY_MUTTON_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_GristlyMuttonSeasoning", "COOKED", "CONSUMABLE_GRISTLY_MUTTON_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_GristlyMuttonSeasoning", "COOKED", "CONSUMABLE_GRISTLY_MUTTON_THYME_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_MatureVenisonSeasoning", "COOKED", "CONSUMABLE_MATURE_VENISON_WILD_MINT_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_MatureVenisonSeasoning", "COOKED", "CONSUMABLE_MATURE_VENISON_OREGANO_COOKED", 1.000000f, false },
-		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_MatureVenisonSeasoning", "COOKED", "CONSUMABLE_MATURE_VENISON_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 8, WriteKind::StatSum, "ACW_HERB_Rank_08_PoisonWeapons", "MADE", "AMMO_ARROW_POISON", 6.000000f, false },
+		{ Category::Herbalist, 8, WriteKind::StatSum, "ACW_HERB_Rank_08_PoisonWeapons", "MADE", "AMMO_THROWING_KNIVES_POISON", 6.000000f, false },
+		// Rank 9 (completeAllParamsInsteadOfGoal): every herb in the group needs PICK >= 1.
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_ACUNAS_STAR_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_ALASKAN_GINSENG", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_AMERICAN_GINSENG", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_BAY_BOLETE", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_BLACK_BERRY", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_BLACK_CURRANT", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_BURDOCK_ROOT", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_CHANTERELLES", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_CIGAR_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_CLAMSHELL_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_COMMON_BULRUSH", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_CREEPING_THYME", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_DESERT_SAGE", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_DRAGONS_MOUTH_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_ENGLISH_MACE", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_EVERGREEN_HUCKLEBERRY", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_GHOST_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_GOLDEN_CURRANT", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_HUMMINGBIRD_SAGE", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_INDIAN_TOBACCO", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_LADY_OF_NIGHT_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_LADY_SLIPPER_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_MILKWEED", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_MOCCASIN_FLOWER_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_NIGHT_SCENTED_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_OLEANDER_SAGE", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_OREGANO", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_PARASOL_MUSHROOM", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_PRAIRIE_POPPY", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_QUEENS_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_RAMS_HEAD", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_RAT_TAIL_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_RED_RASPBERRY", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_RED_SAGE", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_SPARROWS_EGG_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_SPIDER_ORCHID", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_VANILLA_FLOWER", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_VIOLET_SNOWDROP", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_WILD_CARROTS", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_WILD_FEVERFEW", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_WILD_MINT", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_WINTERGREEN_BERRY", 1.000000f, false },
+		{ Category::Herbalist, 9, WriteKind::StatDistinct, "ACW_HERB_Rank_09_AllHerbs", "PICK", "HERB_YARROW", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_ExoticBirdSeasoning", "COOKED", "CONSUMABLE_EXOTIC_BIRD_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_ExoticBirdSeasoning", "COOKED", "CONSUMABLE_EXOTIC_BIRD_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_ExoticBirdSeasoning", "COOKED", "CONSUMABLE_EXOTIC_BIRD_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_TenderPorkSeasoning", "COOKED", "CONSUMABLE_TENDER_PORK_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_TenderPorkSeasoning", "COOKED", "CONSUMABLE_TENDER_PORK_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_TenderPorkSeasoning", "COOKED", "CONSUMABLE_TENDER_PORK_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_PlumpBirdSeasoning", "COOKED", "CONSUMABLE_PLUMP_BIRD_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_PlumpBirdSeasoning", "COOKED", "CONSUMABLE_PLUMP_BIRD_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_PlumpBirdSeasoning", "COOKED", "CONSUMABLE_PLUMP_BIRD_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_BigGameMeatSeasoning", "COOKED", "CONSUMABLE_BIG_GAME_MEAT_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_BigGameMeatSeasoning", "COOKED", "CONSUMABLE_BIG_GAME_MEAT_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_BigGameMeatSeasoning", "COOKED", "CONSUMABLE_BIG_GAME_MEAT_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_PrimeBeefSeasoning", "COOKED", "CONSUMABLE_PRIME_BEEF_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_PrimeBeefSeasoning", "COOKED", "CONSUMABLE_PRIME_BEEF_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_PrimeBeefSeasoning", "COOKED", "CONSUMABLE_PRIME_BEEF_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_SucculentFishSeasoning", "COOKED", "CONSUMABLE_SUCCULENT_FISH_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_SucculentFishSeasoning", "COOKED", "CONSUMABLE_SUCCULENT_FISH_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_SucculentFishSeasoning", "COOKED", "CONSUMABLE_SUCCULENT_FISH_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_GameMeatSeasoning", "COOKED", "CONSUMABLE_GAME_MEAT_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_GameMeatSeasoning", "COOKED", "CONSUMABLE_GAME_MEAT_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_GameMeatSeasoning", "COOKED", "CONSUMABLE_GAME_MEAT_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_FlakeyFishSeasoning", "COOKED", "CONSUMABLE_FLAKEY_FISH_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_FlakeyFishSeasoning", "COOKED", "CONSUMABLE_FLAKEY_FISH_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_FlakeyFishSeasoning", "COOKED", "CONSUMABLE_FLAKEY_FISH_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_CrustaceanMeatSeasoning", "COOKED", "CONSUMABLE_CRUSTACEAN_MEAT_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_CrustaceanMeatSeasoning", "COOKED", "CONSUMABLE_CRUSTACEAN_MEAT_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_CrustaceanMeatSeasoning", "COOKED", "CONSUMABLE_CRUSTACEAN_MEAT_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_GristlyMuttonSeasoning", "COOKED", "CONSUMABLE_GRISTLY_MUTTON_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_GristlyMuttonSeasoning", "COOKED", "CONSUMABLE_GRISTLY_MUTTON_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_GristlyMuttonSeasoning", "COOKED", "CONSUMABLE_GRISTLY_MUTTON_THYME_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_MatureVenisonSeasoning", "COOKED", "CONSUMABLE_MATURE_VENISON_WILD_MINT_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_MatureVenisonSeasoning", "COOKED", "CONSUMABLE_MATURE_VENISON_OREGANO_COOKED", 1.000000f, false },
+		{ Category::Herbalist, 10, WriteKind::StatSum, "ACW_HERB_Rank_10_MatureVenisonSeasoning", "COOKED", "CONSUMABLE_MATURE_VENISON_THYME_COOKED", 1.000000f, false },
 		{ Category::Horseman, 1, WriteKind::Stat, "ACW_HORSE_Rank_01_Rabbits", "KILLED", "AT_RABBIT", 5.000000f, false, Requirement::OnMount },
 		{ Category::Horseman, 2, WriteKind::Stat, "ACW_HORSE_Rank_02_Obstacles", "", "HORSE_VAULTS", 3.000000f, false },
 		// Ranks 3/6/9 (ACW_HORSE_Rank_{03,06,09}_TimedRide) are
@@ -466,29 +544,61 @@ namespace
 		{ Category::Horseman, 10, WriteKind::HorseCompendium, "ACW_HORSE_Rank_10_Mustang", "", "", 0.0f, false, Requirement::None, 0x7E4DF66E },
 		{ Category::Horseman, 10, WriteKind::HorseCompendium, "ACW_HORSE_Rank_10_Nokota", "", "", 0.0f, false, Requirement::None, 0x0660E640 },
 		{ Category::Horseman, 10, WriteKind::HorseCompendium, "ACW_HORSE_Rank_10_Tennessee", "", "", 0.0f, false, Requirement::None, 0x400B3937 },
-		{ Category::MasterHunter, 1, WriteKind::Stat, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_DEER", 3.000000f, false },
-		{ Category::MasterHunter, 1, WriteKind::Stat, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_BUCK", 3.000000f, false },
-		{ Category::MasterHunter, 1, WriteKind::Stat, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_BUCK_LEGENDARY", 3.000000f, false },
+		{ Category::MasterHunter, 1, WriteKind::StatSum, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_DEER", 3.000000f, false },
+		{ Category::MasterHunter, 1, WriteKind::StatSum, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_BUCK", 3.000000f, false },
+		{ Category::MasterHunter, 1, WriteKind::StatSum, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_BUCK_LEGENDARY", 3.000000f, false },
 		{ Category::MasterHunter, 2, WriteKind::ScriptGoal, "ACW_HUNT_Rank_02_Rabbits", "", "", 3.000000f, false },
 		{ Category::MasterHunter, 4, WriteKind::Stat, "ACW_HUNT_Rank_04_CleanKill", "KILLS", "ANIMAL_RESPONDING_TO_CALL", 5.000000f, false },
-		{ Category::MasterHunter, 5, WriteKind::Stat, "ACW_HUNT_Rank_05_Bear", "SKINNED", "AT_BEAR_GRIZZLY", 3.000000f, false },
-		{ Category::MasterHunter, 5, WriteKind::Stat, "ACW_HUNT_Rank_05_Bear", "SKINNED", "AT_BEAR_LEGENDARY", 3.000000f, false },
-		{ Category::MasterHunter, 5, WriteKind::Stat, "ACW_HUNT_Rank_05_Bear", "SKINNED", "AT_BEAR_BLACK", 3.000000f, false },
-		{ Category::MasterHunter, 6, WriteKind::Stat, "ACW_HUNT_Rank_06_CougarKill", "KILLED", "AT_COUGAR", 5.000000f, false },
-		{ Category::MasterHunter, 6, WriteKind::Stat, "ACW_HUNT_Rank_06_CougarKill", "KILLED", "AT_COUGAR_LEGENDARY", 5.000000f, false },
+		// Master Hunter rank 3 is an IntGroupSum over the TRACKED/ANIMALS stat group whose
+		// template caps each animal at 1, so its target of 10 means 10 DIFFERENT animals
+		// tracked (same shape as Herbalist rank 6), gated on CHAL_CTX_SCOPED_KIT. The
+		// group's membership isn't defined in either meta file; these are common
+		// AT_<animal> permutations (the naming the game's scripts use), 12 of them so a
+		// wrong guess or two can't leave the sum under 10.
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_DEER", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_ELK", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_BOAR", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_COUGAR", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_WOLF", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_FOX", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_PRONGHORN", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_BUCK", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_RABBIT", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_RACCOON", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_SQUIRREL", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 3, WriteKind::StatDistinct, "ACW_HUNT_Rank_03_Binoculars", "TRACKED", "AT_TURKEY", 1.000000f, false, Requirement::ScopedKit },
+		{ Category::MasterHunter, 5, WriteKind::StatSum, "ACW_HUNT_Rank_05_Bear", "SKINNED", "AT_BEAR_GRIZZLY", 3.000000f, false },
+		{ Category::MasterHunter, 5, WriteKind::StatSum, "ACW_HUNT_Rank_05_Bear", "SKINNED", "AT_BEAR_LEGENDARY", 3.000000f, false },
+		{ Category::MasterHunter, 5, WriteKind::StatSum, "ACW_HUNT_Rank_05_Bear", "SKINNED", "AT_BEAR_BLACK", 3.000000f, false },
+		{ Category::MasterHunter, 6, WriteKind::StatSum, "ACW_HUNT_Rank_06_CougarKill", "KILLED", "AT_COUGAR", 5.000000f, false },
+		{ Category::MasterHunter, 6, WriteKind::StatSum, "ACW_HUNT_Rank_06_CougarKill", "KILLED", "AT_COUGAR_LEGENDARY", 5.000000f, false },
 		{ Category::MasterHunter, 6, WriteKind::Stat, "ACW_HUNT_Rank_06_CougarKill", "KILLS", "SN_BOW", 1.000000f, false },
-		{ Category::MasterHunter, 6, WriteKind::Stat, "ACW_HUNT_Rank_06_CougarSkin", "SKINNED", "AT_COUGAR", 5.000000f, false },
-		{ Category::MasterHunter, 6, WriteKind::Stat, "ACW_HUNT_Rank_06_CougarSkin", "SKINNED", "AT_COUGAR_LEGENDARY", 5.000000f, false },
-		{ Category::MasterHunter, 7, WriteKind::Stat, "ACW_HUNT_Rank_07_BaitedKills", "KILLS", "ANIMAL_HERBIVORE_BAITED", 1.000000f, false },
-		{ Category::MasterHunter, 7, WriteKind::Stat, "ACW_HUNT_Rank_07_BaitedKills", "KILLS", "ANIMAL_PREDATOR_BAITED", 1.000000f, false },
+		{ Category::MasterHunter, 6, WriteKind::StatSum, "ACW_HUNT_Rank_06_CougarSkin", "SKINNED", "AT_COUGAR", 5.000000f, false },
+		{ Category::MasterHunter, 6, WriteKind::StatSum, "ACW_HUNT_Rank_06_CougarSkin", "SKINNED", "AT_COUGAR_LEGENDARY", 5.000000f, false },
+		{ Category::MasterHunter, 7, WriteKind::StatDistinct, "ACW_HUNT_Rank_07_BaitedKills", "KILLS", "ANIMAL_HERBIVORE_BAITED", 1.000000f, false },
+		{ Category::MasterHunter, 7, WriteKind::StatDistinct, "ACW_HUNT_Rank_07_BaitedKills", "KILLS", "ANIMAL_PREDATOR_BAITED", 1.000000f, false },
 		{ Category::MasterHunter, 8, WriteKind::Stat, "ACW_HUNT_Rank_08_LootedFish", "LOOTED", "FISH", 3.000000f, false },
 		{ Category::MasterHunter, 9, WriteKind::Stat, "ACW_HUNT_Rank_09_Possum", "KILLED_WHILST_PLAYING_DEAD", "AT_POSSUM", 1.000000f, false },
 		{ Category::MasterHunter, 10, WriteKind::Stat, "ACW_HUNT_Rank_10_Panther", "KILLED", "AT_PANTHER_LEGENDARY", 1.000000f, false },
+		// Sharpshooter ranks 1 and 3 bind FLYING_BIRD kills to KILLED/AT_BAT with
+		// CHECK_FOR_SCORE_WHEN_BIND_NOT_PROGRESS: the bird score is only checked
+		// while the bat stat is NOT moving (bat kills are excluded). The generator
+		// emitted the bat stat as a write like any other leaf, which suppressed
+		// the check every time -- so it is deliberately omitted here.
 		{ Category::Sharpshooter, 1, WriteKind::Stat, "ACW_SHOT_Rank_01_Flying", "KILLS", "FLYING_BIRD", 3.000000f, false },
-		{ Category::Sharpshooter, 1, WriteKind::Stat, "ACW_SHOT_Rank_01_Flying", "KILLED", "AT_BAT", 1.000000f, false },
 		{ Category::Sharpshooter, 1, WriteKind::Stat, "ACW_SHOT_Rank_01_Flying", "KILLS", "SHOOTING", 1.000000f, false },
+		// Sharpshooter rank 2: kill 2 DIFFERENT animals within one Dead Eye activation. A
+		// KILLED/ANIMALS group sum (template capped at 1 per animal, target 2), bound to
+		// KILLS/DEADEYE progressing (checked only when it moves), and reset whenever
+		// SPECIAL_ABILITY_ACTIVE_NUM/DEACTIVE_NUM changes -- so Dead Eye must already be on
+		// (gated below) and we never toggle it. The group's membership isn't in the meta
+		// files; these are common AT_<animal> names, 4 so a wrong guess can't leave it under 2.
+		{ Category::Sharpshooter, 2, WriteKind::Stat, "ACW_SHOT_Rank_02_Animals", "KILLS", "DEADEYE", 1.000000f, false, Requirement::DeadeyeActive },
+		{ Category::Sharpshooter, 2, WriteKind::StatDistinct, "ACW_SHOT_Rank_02_Animals", "KILLED", "AT_DEER", 1.000000f, false, Requirement::DeadeyeActive },
+		{ Category::Sharpshooter, 2, WriteKind::StatDistinct, "ACW_SHOT_Rank_02_Animals", "KILLED", "AT_RABBIT", 1.000000f, false, Requirement::DeadeyeActive },
+		{ Category::Sharpshooter, 2, WriteKind::StatDistinct, "ACW_SHOT_Rank_02_Animals", "KILLED", "AT_ELK", 1.000000f, false, Requirement::DeadeyeActive },
+		{ Category::Sharpshooter, 2, WriteKind::StatDistinct, "ACW_SHOT_Rank_02_Animals", "KILLED", "AT_BOAR", 1.000000f, false, Requirement::DeadeyeActive },
 		{ Category::Sharpshooter, 3, WriteKind::Stat, "ACW_SHOT_Rank_03_Train", "KILLS", "FLYING_BIRD", 5.000000f, false, Requirement::OnMovingTrain },
-		{ Category::Sharpshooter, 3, WriteKind::Stat, "ACW_SHOT_Rank_03_Train", "KILLED", "AT_BAT", 1.000000f, false, Requirement::OnMovingTrain },
 		{ Category::Sharpshooter, 4, WriteKind::Stat, "ACW_SHOT_Rank_04_Tomahawk", "FURTHEST_KILL", "TH_TOMAHAWK", 24.500000f, true },
 		{ Category::Sharpshooter, 4, WriteKind::Stat, "ACW_SHOT_Rank_04_Tomahawk", "KILLS", "ENEMY", 1.000000f, false },
 		{ Category::Sharpshooter, 5, WriteKind::Stat, "ACW_SHOT_Rank_05_Switching", "KILLS", "ANIMAL", 6.000000f, false },
@@ -501,8 +611,8 @@ namespace
 		{ Category::Sharpshooter, 9, WriteKind::Stat, "ACW_SHOT_Rank_09_Disarm", "HATSHOTS", "", 3.000000f, false, Requirement::DeadeyeActive },
 		{ Category::Sharpshooter, 10, WriteKind::Stat, "ACW_SHOT_Rank_10_SniperRifle", "KILLS", "FLYING_BIRD", 3.000000f, false },
 		{ Category::Sharpshooter, 10, WriteKind::Stat, "ACW_SHOT_Rank_10_SniperRifle", "KILLS", "GROUP_SNIPER", 1.000000f, false },
-		{ Category::Survivalist, 1, WriteKind::Stat, "ACW_SURV_Rank_01_Bluegill", "CAUGHT", "AT_FBLUEGIL", 3.000000f, false },
-		{ Category::Survivalist, 1, WriteKind::Stat, "ACW_SURV_Rank_01_Bluegill", "CAUGHT", "AT_FBLUEGILL_LEGENDARY", 3.000000f, false },
+		{ Category::Survivalist, 1, WriteKind::StatSum, "ACW_SURV_Rank_01_Bluegill", "CAUGHT", "AT_FBLUEGIL", 3.000000f, false },
+		{ Category::Survivalist, 1, WriteKind::StatSum, "ACW_SURV_Rank_01_Bluegill", "CAUGHT", "AT_FBLUEGILL_LEGENDARY", 3.000000f, false },
 		{ Category::Survivalist, 2, WriteKind::Stat, "ACW_SURV_Rank_02_CarcassDonation", "CARCASSES_DONATED", "", 5.000000f, false },
 		{ Category::Survivalist, 3, WriteKind::Stat, "ACW_SURV_Rank_03_VarmintRifle", "KILLS", "RF_VARMINT", 5.000000f, false },
 		{ Category::Survivalist, 3, WriteKind::Stat, "ACW_SURV_Rank_03_VarmintRifle", "KILLS", "ANIMAL", 1.000000f, false },
@@ -511,18 +621,18 @@ namespace
 		{ Category::Survivalist, 4, WriteKind::Stat, "ACW_SURV_Rank_04_ImprovedArrow", "MADE", "AMMO_ARROW_IMPROVED", 1.000000f, false },
 		{ Category::Survivalist, 4, WriteKind::Stat, "ACW_SURV_Rank_04_PoisonArrow", "MADE", "AMMO_ARROW_POISON", 1.000000f, false },
 		{ Category::Survivalist, 4, WriteKind::Stat, "ACW_SURV_Rank_04_SmallGameArrow", "MADE", "AMMO_ARROW_SMALL_GAME", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "CANOE", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "PIROGUE", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "ROWBOAT", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "ROWBOATSWAMP", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "SKIFF", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "GUAMABOAT", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "HORSEBOAT", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "KEELBOAT", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "RCBOAT", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "STEAMBOAT", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "TUGBOAT", 1.000000f, false },
-		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "TURBINEBOAT", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "CANOE", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "PIROGUE", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "ROWBOAT", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "ROWBOATSWAMP", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "SKIFF", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "GUAMABOAT", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "HORSEBOAT", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "KEELBOAT", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "RCBOAT", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "STEAMBOAT", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "TUGBOAT", 1.000000f, false },
+		{ Category::Survivalist, 5, WriteKind::StatSum, "ACW_SURV_Rank_05_FishingRiverboat", "FISH_CAUGHT_IN", "TURBINEBOAT", 1.000000f, false },
 		{ Category::Survivalist, 5, WriteKind::Stat, "ACW_SURV_Rank_05_FishingTracks", "FISH_CAUGHT_ON_TRAIN_TRACKS", "", 1.000000f, false },
 		{ Category::Survivalist, 6, WriteKind::Stat, "ACW_SURV_Rank_06_ScavengerKill", "KILLS", "SCAVENGING_ANIMAL", 5.000000f, false },
 		{ Category::Survivalist, 7, WriteKind::Stat, "ACW_SURV_Rank_07_SmallGame", "KILLS", "SMALL_ANIMALS", 8.000000f, false },
@@ -531,53 +641,53 @@ namespace
 		{ Category::Survivalist, 8, WriteKind::Stat, "ACW_SURV_Rank_08_ImprovedTomahawk", "MADE", "AMMO_TOMAHAWK_IMPROVED", 1.000000f, false },
 		{ Category::Survivalist, 8, WriteKind::Stat, "ACW_SURV_Rank_08_VolatileDynamite", "MADE", "AMMO_DYNAMITE_VOLATILE", 1.000000f, false },
 		{ Category::Survivalist, 8, WriteKind::Stat, "ACW_SURV_Rank_08_VolatileFireBottle", "MADE", "AMMO_MOLOTOV_VOLATILE", 1.000000f, false },
-		{ Category::Survivalist, 9, WriteKind::Stat, "ACW_SURV_Rank_09_HeavyFishCaught", "BIGGEST_FISH_CAUGHT", "", 19.000000f, true },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_Bluegill", "CAUGHT", "AT_FBLUEGIL", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_Bluegill", "CAUGHT", "AT_FBLUEGILL_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_BullheadCatfish", "CAUGHT", "AT_FBULLHEADCATFISH", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_BullheadCatfish", "CAUGHT", "AT_FBULLHEAD_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_ChainPickerel", "CAUGHT", "AT_FCHAINPICKEREL", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_ChainPickerel", "CAUGHT", "AT_FPICKEREL_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 9, WriteKind::StatAtOnce, "ACW_SURV_Rank_09_HeavyFishCaught", "BIGGEST_FISH_CAUGHT", "", 19.000000f, true },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_Bluegill", "CAUGHT", "AT_FBLUEGIL", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_Bluegill", "CAUGHT", "AT_FBLUEGILL_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_BullheadCatfish", "CAUGHT", "AT_FBULLHEADCATFISH", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_BullheadCatfish", "CAUGHT", "AT_FBULLHEAD_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_ChainPickerel", "CAUGHT", "AT_FCHAINPICKEREL", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_ChainPickerel", "CAUGHT", "AT_FPICKEREL_LEGENDARY", 1.000000f, false },
 		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_ChannelCatfish", "CAUGHT", "AT_FCHANNELCATFISH", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_LakeSturgeon", "CAUGHT", "AT_FLAKESTURGEON", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_LakeSturgeon", "CAUGHT", "AT_FSTURGEON_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_LargemouthBass", "CAUGHT", "AT_FLARGEMOUTHBASS", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_LargemouthBass", "CAUGHT", "AT_FLGBASS_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_LongnoseGar", "CAUGHT", "AT_FLONGNOSEGAR", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_LongnoseGar", "CAUGHT", "AT_FGAR_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_Muskie", "CAUGHT", "AT_FMUSKIE", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_Muskie", "CAUGHT", "AT_FMUSKIE_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_NorthernPike", "CAUGHT", "AT_FNORTHERNPIKE", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_NorthernPike", "CAUGHT", "AT_FPIKE_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_Perch", "CAUGHT", "AT_FPERCH", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_Perch", "CAUGHT", "AT_FPERCH_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_RedfinPickerel", "CAUGHT", "AT_FREDFINPICKEREL", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_RedfinPickerel", "CAUGHT", "AT_FREDFIN_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_RockBass", "CAUGHT", "AT_FROCKBASS", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_RockBass", "CAUGHT", "AT_FROCKBASS_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_SmallmouthBass", "CAUGHT", "AT_FSMALLMOUTHBASS", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_SmallmouthBass", "CAUGHT", "AT_FSMBASS_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_SockeyeSalmon", "CAUGHT", "AT_FSALMONSOCKEYE", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_SockeyeSalmon", "CAUGHT", "AT_FSALMON_LEGENDARY", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_SteelheadTrout", "CAUGHT", "AT_FRAINBOWTROUT", 1.000000f, false },
-		{ Category::Survivalist, 10, WriteKind::Stat, "ACW_SURV_Rank_10_SteelheadTrout", "CAUGHT", "AT_FTROUT_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_LakeSturgeon", "CAUGHT", "AT_FLAKESTURGEON", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_LakeSturgeon", "CAUGHT", "AT_FSTURGEON_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_LargemouthBass", "CAUGHT", "AT_FLARGEMOUTHBASS", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_LargemouthBass", "CAUGHT", "AT_FLGBASS_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_LongnoseGar", "CAUGHT", "AT_FLONGNOSEGAR", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_LongnoseGar", "CAUGHT", "AT_FGAR_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_Muskie", "CAUGHT", "AT_FMUSKIE", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_Muskie", "CAUGHT", "AT_FMUSKIE_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_NorthernPike", "CAUGHT", "AT_FNORTHERNPIKE", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_NorthernPike", "CAUGHT", "AT_FPIKE_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_Perch", "CAUGHT", "AT_FPERCH", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_Perch", "CAUGHT", "AT_FPERCH_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_RedfinPickerel", "CAUGHT", "AT_FREDFINPICKEREL", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_RedfinPickerel", "CAUGHT", "AT_FREDFIN_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_RockBass", "CAUGHT", "AT_FROCKBASS", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_RockBass", "CAUGHT", "AT_FROCKBASS_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_SmallmouthBass", "CAUGHT", "AT_FSMALLMOUTHBASS", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_SmallmouthBass", "CAUGHT", "AT_FSMBASS_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_SockeyeSalmon", "CAUGHT", "AT_FSALMONSOCKEYE", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_SockeyeSalmon", "CAUGHT", "AT_FSALMON_LEGENDARY", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_SteelheadTrout", "CAUGHT", "AT_FRAINBOWTROUT", 1.000000f, false },
+		{ Category::Survivalist, 10, WriteKind::StatSum, "ACW_SURV_Rank_10_SteelheadTrout", "CAUGHT", "AT_FTROUT_LEGENDARY", 1.000000f, false },
 		{ Category::WeaponsExpert, 1, WriteKind::Stat, "ACW_WEAP_Rank_01_KnifeKills", "KILLS", "KNIFE", 3.000000f, false },
 		{ Category::WeaponsExpert, 1, WriteKind::Stat, "ACW_WEAP_Rank_01_KnifeKills", "KILLS", "ENEMY", 1.000000f, false },
 		{ Category::WeaponsExpert, 2, WriteKind::Stat, "ACW_WEAP_Rank_02_ThrowingKnife", "KILLS", "TH_KNIVES", 3.000000f, false },
 		{ Category::WeaponsExpert, 3, WriteKind::Stat, "ACW_WEAP_Rank_03_Tomahawk", "KILLS", "BIRDS_OF_PREY", 3.000000f, false },
 		{ Category::WeaponsExpert, 3, WriteKind::Stat, "ACW_WEAP_Rank_03_Tomahawk", "KILLS", "TH_TOMAHAWK", 1.000000f, false },
-		{ Category::WeaponsExpert, 4, WriteKind::Stat, "ACW_WEAP_Rank_04_ShotgunCraftedAmmo", "KILLS", "AMMO_SHOTGUN_BUCKSHOT_INCENDIARY", 10.000000f, false },
-		{ Category::WeaponsExpert, 4, WriteKind::Stat, "ACW_WEAP_Rank_04_ShotgunCraftedAmmo", "KILLS", "AMMO_SHOTGUN_SLUG_EXPLOSIVE", 10.000000f, false },
+		{ Category::WeaponsExpert, 4, WriteKind::StatSum, "ACW_WEAP_Rank_04_ShotgunCraftedAmmo", "KILLS", "AMMO_SHOTGUN_BUCKSHOT_INCENDIARY", 10.000000f, false },
+		{ Category::WeaponsExpert, 4, WriteKind::StatSum, "ACW_WEAP_Rank_04_ShotgunCraftedAmmo", "KILLS", "AMMO_SHOTGUN_SLUG_EXPLOSIVE", 10.000000f, false },
 		{ Category::WeaponsExpert, 4, WriteKind::Stat, "ACW_WEAP_Rank_04_ShotgunCraftedAmmo", "KILLS", "ENEMY", 1.000000f, false },
 		{ Category::WeaponsExpert, 5, WriteKind::Stat, "ACW_WEAP_Rank_05_Mounted", "KILLS", "MOUNTED_PED", 5.000000f, false },
 		{ Category::WeaponsExpert, 5, WriteKind::Stat, "ACW_WEAP_Rank_05_Mounted", "KILLS", "ENEMY", 1.000000f, false },
 		{ Category::WeaponsExpert, 5, WriteKind::Stat, "ACW_WEAP_Rank_05_Mounted", "KILLS", "TH_KNIVES", 1.000000f, false },
 		{ Category::WeaponsExpert, 5, WriteKind::Stat, "ACW_WEAP_Rank_05_Mounted", "KILLS", "ONE_SHOT", 1.000000f, false },
-		{ Category::WeaponsExpert, 6, WriteKind::Stat, "ACW_WEAP_Rank_06_Dynamite", "KILLS", "ENEMY", 4.000000f, false },
-		{ Category::WeaponsExpert, 6, WriteKind::Stat, "ACW_WEAP_Rank_06_Dynamite", "KILLS", "TH_DYNAMITE", 1.000000f, false },
-		{ Category::WeaponsExpert, 7, WriteKind::Stat, "ACW_WEAP_Rank_07_Tomahawk", "KILLS", "FROM_RECENT_PICKUP", 4.000000f, false },
-		{ Category::WeaponsExpert, 7, WriteKind::Stat, "ACW_WEAP_Rank_07_Tomahawk", "KILLS", "TH_TOMAHAWK", 1.000000f, false },
-		{ Category::WeaponsExpert, 7, WriteKind::Stat, "ACW_WEAP_Rank_07_Tomahawk", "KILLS", "ENEMY", 1.000000f, false },
+		{ Category::WeaponsExpert, 6, WriteKind::StatAtOnce, "ACW_WEAP_Rank_06_Dynamite", "KILLS", "ENEMY", 4.000000f, false },
+		{ Category::WeaponsExpert, 6, WriteKind::StatAtOnce, "ACW_WEAP_Rank_06_Dynamite", "KILLS", "TH_DYNAMITE", 1.000000f, false },
+		{ Category::WeaponsExpert, 7, WriteKind::StatAtOnce, "ACW_WEAP_Rank_07_Tomahawk", "KILLS", "FROM_RECENT_PICKUP", 4.000000f, false },
+		{ Category::WeaponsExpert, 7, WriteKind::StatAtOnce, "ACW_WEAP_Rank_07_Tomahawk", "KILLS", "TH_TOMAHAWK", 1.000000f, false },
+		{ Category::WeaponsExpert, 7, WriteKind::StatAtOnce, "ACW_WEAP_Rank_07_Tomahawk", "KILLS", "ENEMY", 1.000000f, false },
 		{ Category::WeaponsExpert, 8, WriteKind::Stat, "ACW_WEAP_Rank_08_Sidearm", "KILLS", "CI_TAG_LONG_BARRELED_SIDEARM", 15.000000f, false },
 		{ Category::WeaponsExpert, 9, WriteKind::Stat, "ACW_WEAP_Rank_09_Bow", "KILLS", "FROM_BEHIND", 9.000000f, false },
 		{ Category::WeaponsExpert, 9, WriteKind::Stat, "ACW_WEAP_Rank_09_Bow", "KILLS", "UNAWARE", 1.000000f, false },
@@ -585,7 +695,7 @@ namespace
 		{ Category::WeaponsExpert, 9, WriteKind::Stat, "ACW_WEAP_Rank_09_Bow", "KILLS", "SN_BOW", 1.000000f, false },
 		{ Category::WeaponsExpert, 10, WriteKind::Stat, "ACW_WEAP_Rank_10_Bear", "KILLED", "AT_BEAR_GRIZZLY", 1.000000f, false },
 		{ Category::WeaponsExpert, 10, WriteKind::Stat, "ACW_WEAP_Rank_10_Bear", "KILLS", "NO_DAMAGE_RECEIVED", 1.000000f, false },
-		{ Category::WeaponsExpert, 10, WriteKind::Stat, "ACW_WEAP_Rank_10_Bear", "KILLS", "TH_KNIVES", 1.000000f, false },
+		{ Category::WeaponsExpert, 10, WriteKind::StatSum, "ACW_WEAP_Rank_10_Bear", "KILLS", "TH_KNIVES", 1.000000f, false },
 		{ Category::WeaponsExpert, 10, WriteKind::Stat, "ACW_WEAP_Rank_10_Bear", "KILLS", "ONE_WEAPON", 1.000000f, false },
 	};
 
@@ -703,13 +813,6 @@ namespace ChallengeCheat
 		g_lastFailureReason.clear();
 		const char* verb = (mode == WriteMode::Step) ? "AdvanceRank" : "CompleteChallenge";
 
-		// Scoped to this function's whole lifetime (not just the write-
-		// application loop below) so its destructor clears any still-armed
-		// timed-ride goal target and disables the hook on EVERY return path.
-		// If the targeted RDX is observed first, the detour calls the
-		// unlock/fallback function and disables itself immediately.
-		std::optional<TimedRideHook::ScopedTimedRideUnlock> timedRideUnlock;
-
 		Hash chalHash = RootHash(category);
 		int before = STATS::CHAL_GET_NUM_RANKS_COMPLETED(chalHash);
 		int maxRanks = STATS::CHAL_GET_MAX_RANKS(chalHash);
@@ -753,21 +856,119 @@ namespace ChallengeCheat
 					verb, Info(category).displayName, targetRank, w.label);
 				return false;
 			}
+			if (w.requirement == Requirement::ScopedKit && !SCRIPT::_IS_GOAL_CONTEXT_ACTIVE(static_cast<Hash>(rage::Joaat("CHAL_CTX_SCOPED_KIT"))))
+			{
+				g_lastFailureReason = "Raise your binoculars (or scope) for this one and try again.";
+				Log::Write("{}({}): rank {}'s goal '{}' requires the scoped-kit context (binoculars/scope up) -- "
+					"not active. No change made.",
+					verb, Info(category).displayName, targetRank, w.label);
+				return false;
+			}
 			if (w.requirement == Requirement::DeadeyeActive)
 			{
-				Log::Write("{}({}): NOTE -- rank {}'s goal '{}' normally requires Dead Eye "
-					"being active (no native check found for this yet, attempting the write anyway).",
-					verb, Info(category).displayName, targetRank, w.label);
+				// The game only keeps Dead Eye on while aiming a weapon, and forcing
+				// it from script drops right back off (live-tested), so the player
+				// has to aim and activate it themselves before clicking.
+				const Player player = PLAYER::PLAYER_ID();
+				if (!PLAYER::IS_PLAYER_FREE_AIMING(player) && !CAMERA::IS_AIM_CAM_ACTIVE())
+				{
+					g_lastFailureReason = "You must be aiming a weapon with Dead Eye active for this one -- aim, activate Dead Eye, and try again.";
+					Log::Write("{}({}): rank {}'s goal '{}' requires aiming with Dead Eye active -- "
+						"not aiming. No change made.",
+						verb, Info(category).displayName, targetRank, w.label);
+					return false;
+				}
+				if (!PLAYER::_IS_SPECIAL_ABILITY_ACTIVE(player))
+				{
+					g_lastFailureReason = "Dead Eye must be active for this one -- activate it and try again.";
+					Log::Write("{}({}): rank {}'s goal '{}' requires Dead Eye to be active -- "
+						"activate it and try again. No change made.",
+						verb, Info(category).displayName, targetRank, w.label);
+					return false;
+				}
 			}
 		}
 
+		// A challenge category is hidden/locked until the story reaches it (real
+		// scripts call UNLOCK_SET_VISIBLE / UNLOCK_SET_UNLOCKED on the root at
+		// specific story checkpoints -- e.g. Survivalist stays hidden on a new
+		// game until then), and its goals aren't active while it is. Writes to a
+		// hidden category's goals do nothing, so reveal and unlock it first.
+		{
+			const bool wasVisible = UNLOCK::UNLOCK_IS_VISIBLE(chalHash) != FALSE;
+			const bool wasUnlocked = UNLOCK::UNLOCK_IS_UNLOCKED(chalHash) != FALSE;
+			if (!wasVisible || !wasUnlocked)
+			{
+				UNLOCK::UNLOCK_SET_VISIBLE(chalHash, TRUE);
+				UNLOCK::UNLOCK_SET_UNLOCKED(chalHash, TRUE);
+				Log::Write("{}({}): category was {}{}{} -- made it visible and unlocked; waiting a moment for its goals to activate.",
+					verb, Info(category).displayName,
+					wasVisible ? "" : "hidden", (!wasVisible && !wasUnlocked) ? " and " : "", wasUnlocked ? "" : "locked");
+				WAIT(250);
+			}
+		}
+
+		// Diagnostics: what the game itself thinks of this rank's goals right now,
+		// logged before every write so a "did nothing" report can be told apart
+		// from "goal wasn't even active" without another build.
+		{
+			std::vector<const char*> seenLabels;
+			for (const auto& w : kKnownWrites)
+			{
+				if (w.category != category || w.rank != targetRank)
+					continue;
+				bool seen = false;
+				for (const char* label : seenLabels)
+					seen = seen || std::strcmp(label, w.label) == 0;
+				if (seen)
+					continue;
+				seenLabels.push_back(w.label);
+				Log::Write("{}({}): rank counter={}/{}, goal '{}' active={}",
+					verb, Info(category).displayName,
+					STATS::CHAL_GET_NUM_RANKS_COMPLETED(chalHash), STATS::CHAL_GET_MAX_RANKS(chalHash),
+					w.label, STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(w.label))) != FALSE);
+			}
+		}
+
+		// Horseman rank 10 (HorseCompendium) Step: if the game reports some of
+		// the rank's per-breed goals active and some not, that tells us
+		// exactly which breeds are still needed. If it reports them all the
+		// same (can't tell), fall back to our own per-rank counter.
+		bool compendiumGoalStateUsable = false;
+		if (mode == WriteMode::Step)
+		{
+			int total = 0;
+			int active = 0;
+			for (const auto& w : kKnownWrites)
+			{
+				if (w.category != category || w.rank != targetRank || w.kind != WriteKind::HorseCompendium)
+					continue;
+				++total;
+				const bool isActive = STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(w.label))) != FALSE;
+				if (isActive)
+					++active;
+				Log::Write("{}({}): goal '{}' active={}", verb, Info(category).displayName, w.label, isActive);
+			}
+			compendiumGoalStateUsable = active > 0 && active < total;
+			if (total > 0)
+				Log::Write("{}({}): {} of {} per-breed goals report active -- using {} to pick the next breed.",
+					verb, Info(category).displayName, active, total,
+					compendiumGoalStateUsable ? "the game's own goal state" : "our own step counter (goal state didn't distinguish them)");
+		}
+
 		int appliedCount = 0;
+		bool sawDistinctStep = false;
+		bool distinctStepDone = false;
+		const char* distinctRowLabel = nullptr;
+		int distinctRowIndex = 0;
+		int compendiumRowIndex = 0;
+		std::vector<const char*> steppedSumGoals;
 		for (const auto& w : kKnownWrites)
 		{
 			if (w.category != category || w.rank != targetRank)
 				continue;
 
-			if (w.kind == WriteKind::Stat)
+			if (w.kind == WriteKind::Stat || w.kind == WriteKind::StatSum || w.kind == WriteKind::StatDistinct || w.kind == WriteKind::StatAtOnce)
 			{
 				StatId id{
 					static_cast<Hash>(rage::Joaat(w.baseId)),
@@ -781,7 +982,39 @@ namespace ChallengeCheat
 				// gameplay actually calls), and read back immediately after
 				// to separate "the stat write itself didn't land" from "it
 				// landed but the challenge system didn't react to it."
-				float amount = (mode == WriteMode::Complete) ? w.value : 1.0f;
+				float amount = (mode == WriteMode::Complete || w.kind == WriteKind::StatAtOnce) ? w.value : 1.0f;
+				if (w.kind == WriteKind::StatDistinct && mode == WriteMode::Step)
+				{
+					// One click = one new distinct item. Which row is next is
+					// tracked per goal by our own counter, NOT by reading the
+					// stat: live-tested that the goal only counts picks made
+					// after it became active, so an herb the player already
+					// had (e.g. yarrow, from rank 1) still counts once
+					// incremented here, and skipping already-nonzero stats
+					// left the goal one short (14 of 15).
+					sawDistinctStep = true;
+					if (distinctRowLabel == nullptr || std::strcmp(distinctRowLabel, w.label) != 0)
+					{
+						distinctRowLabel = w.label;
+						distinctRowIndex = 0;
+					}
+					const int rowIndex = distinctRowIndex++;
+					if (distinctStepDone || rowIndex != g_distinctStepsCredited[w.label])
+						continue;
+					distinctStepDone = true;
+					++g_distinctStepsCredited[w.label];
+				}
+				if (w.kind == WriteKind::StatSum && mode == WriteMode::Step)
+				{
+					// The goal adds these stats together, so +1 on each row would
+					// be +N total. Credit one per goal per click.
+					bool alreadyStepped = false;
+					for (const char* label : steppedSumGoals)
+						alreadyStepped = alreadyStepped || std::strcmp(label, w.label) == 0;
+					if (alreadyStepped)
+						continue;
+					steppedSumGoals.push_back(w.label);
+				}
 				IncrementStatAndLog(w, id, Info(category), targetRank, verb, amount);
 			}
 			else if (w.kind == WriteKind::ScriptGoal)
@@ -805,30 +1038,54 @@ namespace ChallengeCheat
 				// state, so Step and Complete both just fire the same
 				// one-shot unlock.
 				std::uint64_t timedRideGoalIndex = static_cast<std::uint64_t>(w.value + 0.5f);
-				if (!timedRideUnlock)
-					timedRideUnlock.emplace(timedRideGoalIndex);
-
-				if (!timedRideUnlock->IsReady())
+				// Stays armed AFTER this call returns -- the engine's own
+				// periodic check is what fires it; TimedRideHook::Update()
+				// (called from ScriptMain's loop) tears it down afterwards.
+				if (!TimedRideHook::Arm(timedRideGoalIndex))
 				{
 					Log::Write("{}({}): FAILED to install native timed-ride completion hook for "
 						"goal '{}' (rank {}) -- signature not found or MinHook error (see log above). "
 						"Not counted as an applied write.",
 						verb, Info(category).displayName, w.label, targetRank);
-					timedRideUnlock.reset();
 					continue;
 				}
 
 				Log::Write("{}({}): enabled timed-ride unlock hook for goal '{}' (rank {}, "
-					"timed-ride goal index/RDX={:#x}) -- hook will disable after the first matching call "
-					"or when this call returns.",
+					"timed-ride goal index/RDX={:#x}) -- hook stays armed until the engine's next check "
+					"unlocks it (or it times out).",
 					verb, Info(category).displayName, w.label, targetRank, timedRideGoalIndex);
 			}
 			else if (w.kind == WriteKind::HorseCompendium)
 			{
-				// No sub-unit to step through -- each row is one breed's
-				// compendium entry, an atomic spawn-and-break call with no
-				// partial state, so Step and Complete both apply every
-				// matching row (all 9 breeds for Horseman rank 10).
+				// Each row is one breed's compendium entry (an atomic
+				// spawn-and-break call). Complete applies every row (all 9
+				// breeds for Horseman rank 10); Step credits ONE breed per
+				// click, tracked by our own per-rank counter like
+				// StatDistinct (no native reads a breed's broken state, so an
+				// already-broken breed just costs a harmless redundant click).
+				if (mode == WriteMode::Step)
+				{
+					sawDistinctStep = true;
+					const int rowIndex = compendiumRowIndex++;
+					if (distinctStepDone)
+						continue;
+
+					if (compendiumGoalStateUsable)
+					{
+						// The game tracks each breed as its own goal; skip the
+						// ones it already considers complete.
+						if (!STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(w.label))))
+							continue;
+					}
+					else
+					{
+						const std::string counterKey = std::string("compendium:") + Info(category).displayName + ":" + std::to_string(targetRank);
+						if (rowIndex != g_distinctStepsCredited[counterKey])
+							continue;
+						++g_distinctStepsCredited[counterKey];
+					}
+					distinctStepDone = true;
+				}
 				if (!SpawnAndBreakCompendiumHorse(w.modelHash, w.label))
 				{
 					Log::Write("{}({}): FAILED to spawn/break compendium horse for goal '{}' "
@@ -850,6 +1107,16 @@ namespace ChallengeCheat
 					verb, Info(category).displayName, w.baseId, amount, w.label, targetRank);
 			}
 			appliedCount++;
+		}
+
+		if (appliedCount == 0 && sawDistinctStep)
+		{
+			// Nothing left for Advance to credit. Say so on screen rather than
+			// silently doing nothing.
+			g_lastFailureReason = "Every item for this rank has already been credited -- if the rank isn't complete, use Complete.";
+			Log::Write("{}({}): every item for rank {} is already credited -- nothing to add.",
+				verb, Info(category).displayName, targetRank);
+			return false;
 		}
 
 		if (appliedCount == 0)
