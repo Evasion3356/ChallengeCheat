@@ -84,10 +84,18 @@ line plus "Advance Rank" and "Complete Challenge" actions.
   by the goal's own name -- this IS the mechanism the vanilla game itself
   uses for these specifically (confirmed by `pause_menu.ysc.c`'s own
   `func_351` doing exactly this for `ACW_EXPL_Rank_01_Treasure`).
-- **26 unsupported goals** (10 compendium, 9 item-collection list, 4
-  "reach threshold on N different stats in a named group", 3 timed
-  point-to-point rides with no `<scoreParam>` at all): no known
-  mechanism yet. See the coverage table below.
+- **26 goals with no `<scoreParam>`-based mechanism at design time** (10
+  compendium, 9 item-collection list, 4 "reach threshold on N different
+  stats in a named group", 3 timed point-to-point rides). Two of these
+  four buckets are now resolved: the 3 timed point-to-point rides via
+  `TimedRideHook` (see below), and 9 of the 10 compendium goals -- all of
+  Horseman rank 10's required breeds -- via `WriteKind::HorseCompendium`
+  spawning a breed ped and calling `COMPENDIUM::COMPENDIUM_HORSE_WILD_BROKEN`
+  on it (see the CONFIRMED LIVE section below). The 10th compendium goal
+  (`ACW_HORSE_Rank_10_Arabian`) is commented out in the real
+  `challenges_sp.meta` and isn't required by any live rank, so it's moot.
+  Still genuinely unsupported: the 9 Explorer item-collection-list goals
+  and the 4 group-stat goals. See the coverage table below.
 
 `src/ChallengeCheat.cpp`'s `kKnownWrites` table (208 rows) was generated
 by parsing both real meta files with Python (`xml.etree.ElementTree`):
@@ -114,7 +122,7 @@ still unverified):
 | Explorer | blocked at rank 2 (item-collection list) |
 | Sharpshooter | blocked at rank 2 (mixed group-stat) |
 | Master Hunter | blocked at rank 3 (group-stat) |
-| Horseman | full 1-10 (ranks 3/6/9 via native binary patch, see below) |
+| Horseman | full 1-10 (ranks 3/6/9 via `TimedRideHook`; rank 10 via `WriteKind::HorseCompendium`, both below) -- **rank 10 CONFIRMED LIVE 2026-09-19** |
 | Herbalist | blocked at rank 6 (group-stat) |
 
 **Horseman ranks 3/6/9 (`ACW_HORSE_Rank_{03,06,09}_TimedRide`) -- no
@@ -265,6 +273,49 @@ failure. The other two condition types (moving train, Dead Eye active)
 have no native check wired up yet -- the write is attempted anyway with
 just a log NOTE, so those may still silently fail if the condition isn't
 met; no native for either has been identified.
+
+**CONFIRMED LIVE (2026-09-19): Horseman rank 10's 9 horse-breed compendium
+goals, via `WriteKind::HorseCompendium`.** Rank 10 requires ALL 9 of
+`ACW_HORSE_Rank_10_{American_Paint,American_Standardbred,Appaloosa,
+Hungarian,Kentucky,Morgan,Mustang,Nokota,Tennessee}` (`Arabian` is
+commented out in the real `challenges_sp.meta`, so only 9 are actually
+required) -- `kKnownWrites`' original generator never emitted a row for
+these because each goal's only `<scoreParam>` leaf is a
+`StatsGoalScoreSourceCompendium` (e.g. `CMPNDM_AMPAINT`/`CMPNDM_AMPAINT_RARE`
+for the Paint goal), a leaf type the generator only handled for
+Stat/Script. The real mechanism: `player_horse.ysc.c` (~line 6546) marks
+a breed's compendium entry "broken" by calling
+`COMPENDIUM::COMPENDIUM_HORSE_WILD_BROKEN(pedIndex)` on the wild horse
+ped that was just tamed -- the native reads THAT ped's own model to
+figure out which breed/entry to credit; it isn't told the breed
+directly. `WriteKind::HorseCompendium` (and its `SpawnAndBreakCompendiumHorse()`
+helper in `ChallengeCheat.cpp`) replicates this: spawns a short-lived,
+no-longer-needed ped of the target breed's model a few meters from the
+player, calls the native on it once, then deletes it before a render
+frame -- the player never sees it appear. Live-tested end to end: 8 of 9
+breeds worked on the first attempt.
+
+**Mustang needed a second attempt -- a real "which coat counts as wild"
+gotcha, not a bug in the mechanism itself.** The first Mustang `modelHash`
+(`0x62121AEC`, decoded via joaat as `A_C_HORSE_MUSTANG_BUCKSKIN`) spawned
+fine and the native call completed without error (logged), but
+`CMPNDM_MUSTANG`/`CMPNDM_MUSTANG_RARE` never actually flipped -- silently
+wrong, not a crash. Grepping all 1,638 decompiled SP scripts for every
+Mustang coat name referenced in a wild-population switch/case showed
+exactly 4: `a_c_horse_mustang_{grullodun,tigerstripedbay,goldendun,wildbay}`
+-- Buckskin never appears among them anywhere. Buckskin is a real,
+loadable, spawnable ped model (so `CREATE_PED` succeeded and gave no
+indication anything was wrong) -- it's just not one of the coats the wild
+ambient population (or `COMPENDIUM_HORSE_WILD_BROKEN`'s own internal
+wild-coat table) ever generates for Mustangs, so the native's internal
+model->breed/coat lookup had nothing to match it against. Switched the
+row to `0x7E4DF66E` (`a_c_horse_mustang_wildbay`, one of the 4 real wild
+coats) -- confirmed live working. **Lesson for any future breed/animal
+goal that needs a spawned stand-in ped: the model must be a coat/variant
+the game's own wild population actually uses, not just any valid model
+of the right species/breed -- cross-check against a real script's own
+switch-case coat list before picking one, not just against the breed
+name.**
 
 Still open: whether the real reward (item/recipe/cosmetic) is actually
 granted alongside a cheat-driven rank completion, not just the rank
@@ -461,10 +512,13 @@ does a scoped binary patch of the actual native function.
    so Sharpshooter ranks 3 and 9 get the same pre-check/message treatment
    `OnMount` already has, instead of just a log NOTE and a possibly-silent
    failure.
-6. Growing coverage past the remaining 23 unsupported goals needs: for
-   the 9 Explorer item-collection-list goals, finding the native that
-   marks a named collectable item as found; for the 4 group-stat goals,
-   finding where a named stat GROUP's membership list is defined (not in
-   either real meta file); for the 10 Horseman compendium goals, finding
-   the compendium-entry-completion native. (The 3 Horseman timed rides
-   are no longer in this bucket -- see `TimedRideHook` above.)
+6. Growing coverage past the remaining 13 genuinely unsupported goals
+   needs: for the 9 Explorer item-collection-list goals, finding the
+   native that marks a named collectable item as found; for the 4
+   group-stat goals, finding where a named stat GROUP's membership list
+   is defined (not in either real meta file). (The 3 Horseman timed rides
+   and 9 of the 10 Horseman compendium goals are no longer in this bucket
+   -- see `TimedRideHook` and `WriteKind::HorseCompendium` above. The
+   10th compendium goal, `ACW_HORSE_Rank_10_Arabian`, is commented out in
+   the real `challenges_sp.meta` and isn't required by any live rank, so
+   it's not worth chasing.)
