@@ -87,7 +87,7 @@ const float
 	MenuItemTitle_textLeft	 = 0.01f;
 
 const ColorRgba
-	MenuItemTitle_colorRect { 0, 0, 0, 255 },
+	MenuItemTitle_colorRect { 0, 0, 0, 230 },
 	MenuItemTitle_colorText { 255, 255, 255, 255 };
 
 class MenuItemTitle : public MenuItemBase
@@ -122,11 +122,15 @@ const float
 	MenuItemDefault_lineHeight	= 0.05f,
 	MenuItemDefault_textLeft	= 0.01f;
 
+// RDR2-styled palette: a plain grey highlight bar behind every item
+// (selected or not, same as the game's own menus), white text throughout,
+// and the selected item picked out by a thin red border drawn separately
+// in MenuItemBase::OnDraw -- not by a different fill/text color here.
 const ColorRgba
-	MenuItemDefault_colorRect			{ 70, 95, 95, 150 },
-	MenuItemDefault_colorText			{ 255, 255, 255, 150 },
-	MenuItemDefault_colorRectActive		{ 218, 242, 216, 200 },
-	MenuItemDefault_colorTextActive		{ 0, 0, 0, 200 };
+	MenuItemDefault_colorRect			{ 50, 50, 50, 180 },
+	MenuItemDefault_colorText			{ 255, 255, 255, 200 },
+	MenuItemDefault_colorRectActive		{ 50, 50, 50, 180 },
+	MenuItemDefault_colorTextActive		{ 255, 255, 255, 255 };
 
 class MenuItemDefault : public MenuItemBase
 {
@@ -230,8 +234,18 @@ const int
 
 const float
 	MenuBase_menuTop  = 0.05f,
-	MenuBase_menuLeft = 0.0f,
-	MenuBase_lineOverlap = 1.0f / 40.0f;
+	MenuBase_menuLeft = 0.5f - MenuItemDefault_lineWidth / 2.0f,
+	MenuBase_lineOverlap = 1.0f / 40.0f,
+	// Thickness of the red border MenuItemBase::OnDraw adds around
+	// whichever item is currently active, in the same 0..1 normalized
+	// units as everything else -- RDR2's own menus (and
+	// Githubs/RDR2-Native-Menu-Base's DrawSelectionBox()) pick out the
+	// selected row with exactly this: a plain grey fill on every row,
+	// red only on the selected one's edge.
+	MenuBase_activeBorderThickness = 0.0025f;
+
+const ColorRgba
+	MenuBase_activeBorderColor { 204, 0, 0, 255 };
 
 class MenuBase
 {
