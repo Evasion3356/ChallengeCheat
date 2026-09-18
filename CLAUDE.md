@@ -463,6 +463,18 @@ does a scoped binary patch of the actual native function.
   callback every draw -- the live rank readout) and
   `MenuItemActionStatus` (like `MenuItemAction`, but the callback returns
   a result string shown via the transient status-text popup).
+- `src/Config.h`/`.cpp` + `external/inipp` (git submodule) -- inipp-backed
+  `ChallengeCheat.ini` next to the `.asi`, same load-and-rewrite pattern as
+  the siblings. Release-visible (unlike theirs). One setting so far:
+  `[General] MenuKey` (default `F9`), read by `MenuInput::MenuSwitchPressed`.
+  Loaded lazily on first `Get()` from the script thread, NOT from `DllMain`
+  (MenuKey parsing calls `VkKeyScanW`).
+- `src/KeyNames.h`/`.cpp` -- keycap-style key name <-> VK parser for
+  `MenuKey`: F1-F24, A-Z/0-9, NUMPAD*, named keys with keycap aliases
+  (PAGEDOWN/PGDN, not VK_NEXT), and single unshifted punctuation chars via
+  `VkKeyScanW` (active layout). Rejects keys the menu already uses for
+  navigation (numpad 2/4/5/6/8, arrows, Enter); invalid values log a
+  warning and fall back to F9. Note: NUMPAD keys need NumLock on.
 - `src/keyboard.h`/`.cpp` -- vendored unchanged from the sibling projects.
 - `src/Log.h` -- file logger (`ChallengeCheat.log`), vendored unchanged
   in structure.

@@ -1,17 +1,17 @@
 /*
 	Adapted from the ScriptHookRDR2 SDK's NativeTrainer sample menu framework
 	(Alexander Blade, http://dev-c.com), same vendored copy PokerCheat/
-	BlackjackCheat/DominoCheat use. Only change from the original: this mod
-	uses VK_F9 as its toggle key -- F10/F11/F12 are already claimed by
-	PokerCheat/BlackjackCheat/DominoCheat respectively (all plausibly loaded
-	into the game at the same time, all siblings under the same "RDR2 Shit"
-	folder).
+	BlackjackCheat/DominoCheat use. Only change from the original: the
+	toggle key is configurable (ChallengeCheat.ini, default F9 -- F10/F11/
+	F12 are already claimed by PokerCheat/BlackjackCheat/DominoCheat
+	respectively, all plausibly loaded into the game at the same time).
 */
 
 #pragma once
 
 #include "script.h"
 #include "keyboard.h"
+#include "Config.h"
 
 #include <windows.h>
 #include <vector>
@@ -286,12 +286,12 @@ struct MenuInputButtonState
 class MenuInput
 {
 public:
-	// Toggle key F9 -- see this file's own header comment for why (F10/F11/
-	// F12 are already claimed by PokerCheat/BlackjackCheat/DominoCheat's own
-	// menus).
+	// Toggle key comes from ChallengeCheat.ini's [General] MenuKey (default
+	// F9 -- F10/F11/F12 are claimed by PokerCheat/BlackjackCheat/
+	// DominoCheat's own menus).
 	static bool MenuSwitchPressed()
 	{
-		return IsKeyJustUp(VK_F9);
+		return IsKeyJustUp(Config::Get().MenuKey);
 	}
 	static MenuInputButtonState GetButtonState()
 	{
