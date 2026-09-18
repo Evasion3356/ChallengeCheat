@@ -201,14 +201,20 @@ public:
 // text (same on-screen popup MenuController::SetStatusText already drives)
 // instead of requiring the player to alt-tab to the log for immediate
 // feedback on whether Advance/Complete actually did anything. An empty
-// returned string shows nothing.
+// returned string shows nothing. The caption is ALSO a callback, recomputed
+// every draw just like MenuItemLabel's -- lets the caption embed live state
+// (e.g. "Advance Bandit 4", where 4 is the next rank) instead of a fixed
+// label picked once at menu-build time.
 class MenuItemActionStatus : public MenuItemDefault
 {
+	std::function<std::string()>	m_captionFn;
 	std::function<std::string()>	m_action;
 public:
-	MenuItemActionStatus(string caption, std::function<std::string()> action)
-		: MenuItemDefault(caption),
+	MenuItemActionStatus(std::function<std::string()> captionFn, std::function<std::string()> action)
+		: MenuItemDefault(""),
+		m_captionFn(captionFn),
 		m_action(action) {}
+	virtual string GetCaption() override { return m_captionFn ? m_captionFn() : ""; }
 	virtual void OnSelect() override
 	{
 		if (!m_action)

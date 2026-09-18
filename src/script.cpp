@@ -31,45 +31,66 @@ namespace
 	std::string FormatRank(ChallengeCheat::Category category)
 	{
 		std::ostringstream oss;
-		oss << "Rank " << ChallengeCheat::GetRanksCompleted(category)
+		oss << ChallengeCheat::GetDisplayName(category) << " " << ChallengeCheat::GetRanksCompleted(category)
 			<< " / " << ChallengeCheat::GetMaxRanks(category);
 		return oss.str();
 	}
 
+	// The rank an Advance/Complete click on this category would target right
+	// now -- clamped to the category's max so it never reads e.g. "11" once
+	// already fully completed (that click still runs and reports "already
+	// fully completed" via GetLastAdvanceFailureReason(), this is just what
+	// the button caption shows beforehand).
+	int NextRank(ChallengeCheat::Category category)
+	{
+		int next = ChallengeCheat::GetRanksCompleted(category) + 1;
+		int max = ChallengeCheat::GetMaxRanks(category);
+		return next > max ? max : next;
+	}
+
+	std::string FormatAdvanceCaption(ChallengeCheat::Category category)
+	{
+		return "Advance " + std::string(ChallengeCheat::GetDisplayName(category)) + " " + std::to_string(NextRank(category));
+	}
+
+	std::string FormatCompleteCaption(ChallengeCheat::Category category)
+	{
+		return "Complete " + std::string(ChallengeCheat::GetDisplayName(category)) + " " + std::to_string(NextRank(category));
+	}
+
+	// Fire-and-forget (2026-09-19): an empty return shows NO status popup at
+	// all (MenuItemActionStatus only calls SetStatusText for a non-empty
+	// result) -- on screen text should only ever appear when the action
+	// genuinely could not be attempted (a live requirement gate, already
+	// maxed, or no known write for the goal), never as a "still working on
+	// it" guess. See ChallengeCheat.h's AdvanceRank()/CompleteChallenge()
+	// doc comments for why polling for confirmation was removed.
 	std::string DoAdvanceRank(ChallengeCheat::Category category)
 	{
 		if (ChallengeCheat::AdvanceRank(category))
-		{
-			return std::string(ChallengeCheat::GetDisplayName(category)) + ": advanced to rank "
-				+ std::to_string(ChallengeCheat::GetRanksCompleted(category)) + " (see log)";
-		}
-		const std::string& reason = ChallengeCheat::GetLastAdvanceFailureReason();
-		if (!reason.empty())
-			return std::string(ChallengeCheat::GetDisplayName(category)) + ": " + reason;
-		return std::string(ChallengeCheat::GetDisplayName(category)) + ": could not advance -- see log for why";
+			return {};
+		return std::string(ChallengeCheat::GetDisplayName(category)) + ": "
+			+ ChallengeCheat::GetLastAdvanceFailureReason();
 	}
 
 	std::string DoCompleteChallenge(ChallengeCheat::Category category)
 	{
-		int advanced = ChallengeCheat::CompleteChallenge(category);
-		if (advanced > 0)
-		{
-			return std::string(ChallengeCheat::GetDisplayName(category)) + ": advanced " + std::to_string(advanced)
-				+ " rank(s), now " + std::to_string(ChallengeCheat::GetRanksCompleted(category)) + "/"
-				+ std::to_string(ChallengeCheat::GetMaxRanks(category)) + " (see log)";
-		}
-		const std::string& reason = ChallengeCheat::GetLastAdvanceFailureReason();
-		if (!reason.empty())
-			return std::string(ChallengeCheat::GetDisplayName(category)) + ": " + reason;
-		return std::string(ChallengeCheat::GetDisplayName(category)) + ": could not advance any further -- see log for why";
+		if (ChallengeCheat::CompleteChallenge(category) > 0)
+			return {};
+		return std::string(ChallengeCheat::GetDisplayName(category)) + ": "
+			+ ChallengeCheat::GetLastAdvanceFailureReason();
 	}
 
 	MenuBase* BuildCategoryMenu(ChallengeCheat::Category category)
 	{
 		MenuBase* menu = new MenuBase(new MenuItemTitle(ChallengeCheat::GetDisplayName(category)));
 		menu->AddItem(new MenuItemLabel([category]() { return FormatRank(category); }));
-		menu->AddItem(new MenuItemActionStatus("Advance Rank", [category]() { return DoAdvanceRank(category); }));
-		menu->AddItem(new MenuItemActionStatus("Complete Challenge", [category]() { return DoCompleteChallenge(category); }));
+		menu->AddItem(new MenuItemActionStatus(
+			[category]() { return FormatAdvanceCaption(category); },
+			[category]() { return DoAdvanceRank(category); }));
+		menu->AddItem(new MenuItemActionStatus(
+			[category]() { return FormatCompleteCaption(category); },
+			[category]() { return DoCompleteChallenge(category); }));
 		g_menuController.RegisterMenu(menu); // required for MenuItemMenu::OnSelect's PushMenu to accept it
 		return menu;
 	}

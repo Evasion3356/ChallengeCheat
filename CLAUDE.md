@@ -23,8 +23,51 @@ real stats directly) has not been live-tested yet** -- an earlier design
 (writing goal progress by name for every goal) WAS live-tested and
 disproven; see below.
 
-Menu (F9): 9 category submenus, each showing a live "Rank X / Y" status
-line plus "Advance Rank" and "Complete Challenge" actions.
+Menu (F9): 9 category submenus, each showing a live "<Challenge Name> X /
+10" status line plus "Advance <Challenge Name> N" and "Complete <Challenge
+Name> N" actions, where N is the next rank a click would target (e.g.
+"Advance Bandit 4") -- renamed 2026-09-19 from the generic "Rank X / Y" /
+"Advance Rank" / "Complete Challenge" so the player always sees which
+challenge and rank they're acting on without needing to recall which
+submenu they're in.
+
+**Advance/Complete semantics redefined (2026-09-19).** Originally "Advance
+Rank" pushed a rank's goal(s) straight to their full target in one call
+(completing that whole rank), and "Complete Challenge" looped that same
+call until the category hit its max rank (all 10 at once). Live testing
+showed both halves of this were wrong: jumping straight to rank 10 in one
+menu click is not what the user wants -- they want to advance their
+CURRENT in-progress goal one real step at a time (e.g. "killed 1 more
+rabbit" toward a "kill 4 rabbits" goal), the same granularity a real
+playthrough would produce. So the mapping flipped: **"Advance Rank" now
+applies one small step** (`WriteMode::Step` -- e.g. +1 to a stat, +1
+script-goal progress, +1 collectable found) that usually does NOT
+complete the rank by itself; **"Complete Challenge" now does what the old
+"Advance Rank" did** -- push the current rank's goal(s) to their full
+target in one call, completing just that ONE rank (never loops across
+multiple ranks). `WriteKind::PointToPointHook` and `HorseCompendium` have
+no meaningful sub-unit to step through (each is one atomic, all-or-
+nothing native call), so both modes apply identically for those two kinds
+only. See `ChallengeCheat.cpp`'s `ApplyRankProgress`/`WriteMode` and
+`ChallengeCheat.h`'s `AdvanceRank()`/`CompleteChallenge()` doc comments.
+
+**Also fire-and-forget now, not polling.** The original design polled
+`CHAL_GET_NUM_RANKS_COMPLETED` for up to ~3 seconds after every write and
+reported on-screen failure if the counter hadn't moved yet. Live testing
+(2026-09-19) showed this was actively wrong, not just slow: writes that
+were genuinely landing and completing the rank (visible on screen a
+moment later) still got reported as "could not advance," because the
+challenge system's own background re-evaluation regularly takes longer
+than the poll window -- and a Step-mode write is frequently not even
+*trying* to complete the rank in one call, so a rank-counter check was
+never the right success signal for it either. Both actions now apply
+their write(s) and return immediately without polling. The menu shows
+NO on-screen status text on success (`MenuItemActionStatus` only pops up
+non-empty results) -- a message only ever appears when the action
+genuinely could not be attempted at all: a live requirement gate (not on
+horseback / not riding a train), the category already at max rank, or no
+known write for that goal yet. Full detail always still goes to the log
+regardless.
 
 ### The real goal registry -- three passes to get here
 
@@ -86,18 +129,25 @@ line plus "Advance Rank" and "Complete Challenge" actions.
   `func_351` doing exactly this for `ACW_EXPL_Rank_01_Treasure`).
 - **26 goals with no `<scoreParam>`-based mechanism at design time** (10
   compendium, 9 item-collection list, 4 "reach threshold on N different
-  stats in a named group", 3 timed point-to-point rides). Two of these
+  stats in a named group", 3 timed point-to-point rides). Three of these
   four buckets are now resolved: the 3 timed point-to-point rides via
-  `TimedRideHook` (see below), and 9 of the 10 compendium goals -- all of
+  `TimedRideHook` (see below), 9 of the 10 compendium goals -- all of
   Horseman rank 10's required breeds -- via `WriteKind::HorseCompendium`
   spawning a breed ped and calling `COMPENDIUM::COMPENDIUM_HORSE_WILD_BROKEN`
-  on it (see the CONFIRMED LIVE section below). The 10th compendium goal
+  on it (see the CONFIRMED LIVE section below), and (2026-09-18) the 9
+  Explorer item-collection-list goals (`ACW_EXPL_Rank_{02..10}_Treasure`,
+  all `StatsGoalParamIntGroupSum` over the same 18-item
+  `StatsGoalScoreSourceGroupCollectableList` pool) via
+  `WriteKind::Collectable`, which calls
+  `COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND` -- the exact native
+  `treasure_hunter.ysc.c` (~line 218) calls once per real loot pickup --
+  directly on a distinct pool item per rank. The 10th compendium goal
   (`ACW_HORSE_Rank_10_Arabian`) is commented out in the real
   `challenges_sp.meta` and isn't required by any live rank, so it's moot.
-  Still genuinely unsupported: the 9 Explorer item-collection-list goals
-  and the 4 group-stat goals. See the coverage table below.
+  Still genuinely unsupported: the 4 group-stat goals. See the coverage
+  table below.
 
-`src/ChallengeCheat.cpp`'s `kKnownWrites` table (208 rows) was generated
+`src/ChallengeCheat.cpp`'s `kKnownWrites` table (226 rows) was generated
 by parsing both real meta files with Python (`xml.etree.ElementTree`):
 `challenges_sp.meta`'s `<ranks><Item>` gives rank order and real goal
 names; `goals_sp.meta`'s `<scoreParam>` tree is walked recursively per
@@ -119,10 +169,10 @@ still unverified):
 | Gambler | full 1-10 |
 | Survivalist | full 1-10 |
 | Weapons Expert | full 1-10 |
-| Explorer | blocked at rank 2 (item-collection list) |
+| Explorer | full 1-10 (ranks 2-10 via `WriteKind::Collectable`, see below) -- **builds clean 2026-09-18, not yet live-tested** |
 | Sharpshooter | blocked at rank 2 (mixed group-stat) |
 | Master Hunter | blocked at rank 3 (group-stat) |
-| Horseman | full 1-10 (ranks 3/6/9 via `TimedRideHook`; rank 10 via `WriteKind::HorseCompendium`, both below) -- **rank 10 CONFIRMED LIVE 2026-09-19** |
+| Horseman | full 1-10 (ranks 3/6/9 via `TimedRideHook`; rank 10 via `WriteKind::HorseCompendium`, both below) -- **all of ranks 1-10 CONFIRMED LIVE 2026-09-17 night / 2026-09-19, pre-refactor; not yet re-tested post-refactor** |
 | Herbalist | blocked at rank 6 (group-stat) |
 
 **Horseman ranks 3/6/9 (`ACW_HORSE_Rank_{03,06,09}_TimedRide`) -- no
@@ -225,11 +275,15 @@ RDX in the `value` field (353/356/359 decimal = 0x161/0x164/0x167).
 `MH_Uninitialize()`, since MinHook is a process-wide library that
 shouldn't outlive this ASI's own load.
 
-**Not yet live-tested through the mod's own `AdvanceRank()` -- only the
-byte-patch version (now superseded) was confirmed live end-to-end. The
-selective version builds clean in both configurations but the actual
-fix for the "completes 6/9 for free" bug has not yet been re-verified
-in game.**
+**CONFIRMED LIVE (2026-09-17 night, pre-refactor): the selective
+`TimedRideHook` works through the mod's own `AdvanceRank()`.** Horseman
+ranks 1-10 were all tested live end-to-end with the hook in place,
+including ranks 3/6/9 individually -- the "completes 6/9 for free" bug
+from the byte-patch version is fixed. **Not yet re-tested since the
+`04504c7` "Improve challenge code maintainability" refactor commit** --
+the core mechanism (RDX-selective detour, ScopedTarget RAII) is
+unchanged by that refactor, so this is expected to still work, but it
+hasn't been re-confirmed in game post-refactor.
 
 **CONFIRMED LIVE (2026-09-17): writing the real stat works.** First
 attempt used `STATS::STAT_ID_SET_INT`/`_FLOAT` and failed -- readback
@@ -243,8 +297,13 @@ tick as the write, which looked like a second failure -- but a live
 in-game check showed the real Progress/Challenges screen DID complete
 the rank a moment later once the player waited, meaning the challenge
 system re-evaluates on a short delay, not synchronously. `AdvanceRank()`
-now polls for up to ~3 seconds (`WAIT(500)` x6) before concluding a write
-didn't take, instead of checking once immediately.
+was changed at the time to poll for up to ~3 seconds (`WAIT(500)` x6)
+before concluding a write didn't take, instead of checking once
+immediately. **That polling was itself removed 2026-09-19** -- see
+"Advance/Complete semantics redefined" above -- once live testing showed
+even 3 seconds wasn't reliably enough and the whole approach was fighting
+an async system instead of just trusting it; both actions are
+fire-and-forget now.
 
 **Live-tested end to end on 3 categories**: Bandit ranks 3-10 all
 advanced correctly via the stat-increment path (8 consecutive rank
@@ -264,15 +323,20 @@ type="...">` (not just the one that failed) and found exactly 3 kinds:
 `CAIConditionIsOnMount` (4 goals, all Horseman: ranks 1, 4, 7, 8),
 `CAIConditionGoalContext` (Sharpshooter rank 3 -- `CHAL_CTX_ON_MOVING_TRAIN`,
 and Master Hunter rank 3, already unsupported for other reasons), and
-`CAIConditionPlayerIsDeadeyeActive` (Sharpshooter rank 9). Only
-`OnMount` has a simple native check (`PED::IS_PED_ON_MOUNT(PLAYER::PLAYER_PED_ID())`)
--- `AdvanceRank()` now checks this BEFORE writing anything for a rank
-that needs it, and returns a specific on-screen message ("You must be
-on horseback...") via `GetLastAdvanceFailureReason()` instead of a bare
-failure. The other two condition types (moving train, Dead Eye active)
-have no native check wired up yet -- the write is attempted anyway with
-just a log NOTE, so those may still silently fail if the condition isn't
-met; no native for either has been identified.
+`CAIConditionPlayerIsDeadeyeActive` (Sharpshooter rank 9). `OnMount` has
+a simple native check (`PED::IS_PED_ON_MOUNT(PLAYER::PLAYER_PED_ID())`)
+-- `AdvanceRank()` checks this BEFORE writing anything for a rank that
+needs it, and returns a specific on-screen message ("You must be on
+horseback...") via `GetLastAdvanceFailureReason()` instead of a bare
+failure. **`OnMovingTrain` got the same treatment 2026-09-18** via
+`PLAYER::IS_PLAYER_RIDING_TRAIN(PLAYER::PLAYER_ID())` (found in
+`natives.h`, documented inline as "Returns true if the player is riding
+a train") -- gates Sharpshooter rank 3 the same way `OnMount` gates its
+own ranks, with its own on-screen message. Builds clean; not yet
+live-tested. `DeadeyeActive` (Sharpshooter rank 9) still has no native
+check wired up -- the write is attempted anyway with just a log NOTE, so
+it may still silently fail if the condition isn't met; no native for it
+has been identified yet.
 
 **CONFIRMED LIVE (2026-09-19): Horseman rank 10's 9 horse-breed compendium
 goals, via `WriteKind::HorseCompendium`.** Rank 10 requires ALL 9 of
@@ -373,11 +437,20 @@ does a scoped binary patch of the actual native function.
 - `src/script.h`/`script.cpp` -- entry point and the F9 menu shell: 9
   category submenus (built in a loop over `ChallengeCheat::Category`),
   each with a live `MenuItemLabel` rank readout plus `MenuItemActionStatus`
-  Advance/Complete actions that surface a short on-screen result via the
-  menu controller's status-text popup (full detail always also goes to
-  the log). On failure, prefers `ChallengeCheat::GetLastAdvanceFailureReason()`
-  for the popup text when it's non-empty (currently only set for the
-  "requires being on horseback" gate) over the generic "see log" message.
+  Advance/Complete actions. Both the rank readout and the two action
+  captions are named after the category (2026-09-19, e.g. "Bandit 3 / 10",
+  "Advance Bandit 4", "Complete Bandit 4") instead of the generic "Rank X /
+  Y" -- `MenuItemActionStatus` in `scriptmenu.h` now takes a caption
+  CALLBACK (recomputed every draw, same as `MenuItemLabel`'s) instead of a
+  fixed string, so the button label's rank number stays live as ranks
+  complete. Fire-and-forget (2026-09-19, see "Advance/Complete semantics
+  redefined" above): `DoAdvanceRank`/`DoCompleteChallenge` return an EMPTY
+  string on success, which shows NO status popup at all
+  (`MenuItemActionStatus::OnSelect` only calls `SetStatusText` for a
+  non-empty result) -- full detail always still goes to the log. On
+  failure they always return `ChallengeCheat::GetLastAdvanceFailureReason()`,
+  which `ApplyRankProgress` now guarantees is non-empty on every failure
+  path (already maxed, a live requirement gate, or no known write).
 - `src/ChallengeCheat.h`/`.cpp` -- the actual logic. **Its file header
   comment is the single most important thing to read** -- the full
   research trail (native surface, root hashes, how the real goal
@@ -480,15 +553,17 @@ does a scoped binary patch of the actual native function.
 
 ## Next concrete step
 
-1. **Live-test the `TimedRideHook` binary patch through the mod's own
-   `AdvanceRank()` flow** (Horseman ranks 3, then 6, then 9) -- so far
-   only a manual debugger patch-and-verify has been confirmed live, not
-   the actual `WriteKind::PointToPointHook` code path. Watch the log for
-   "TimedRideHook: patched at..." / "...restored original bytes at..." to
-   confirm the AOB signature still resolves to the right address and the
-   scoped patch/restore cycle works cleanly (no leftover patched bytes if
-   `AdvanceRank()` returns early for any reason).
-2. **Confirm real reward-grant, not just the rank counter/pause-menu
+1. **Re-live-test `TimedRideHook` through the mod's own `AdvanceRank()`
+   flow post-refactor** (Horseman ranks 3, then 6, then 9). This full
+   path (not just the underlying hook mechanism) WAS confirmed live
+   2026-09-17 night, pre-`04504c7` refactor -- ranks 1-10 all worked,
+   including 3/6/9 individually with no cross-completion. The refactor
+   didn't touch the hook's core logic, so this is expected to still
+   work, but hasn't been re-verified in game since.
+2. **Live-test the new `OnMovingTrain` gate** (Sharpshooter rank 3, via
+   `PLAYER::IS_PLAYER_RIDING_TRAIN`, added 2026-09-18) -- builds clean,
+   never run in game yet.
+3. **Confirm real reward-grant, not just the rank counter/pause-menu
    display**: Bandit ranks 3-10, Gambler, and Herbalist have all been
    live-confirmed to advance the rank counter correctly, but whether the
    actual reward (item/recipe/cosmetic) is granted alongside a
@@ -496,29 +571,35 @@ does a scoped binary patch of the actual native function.
    checking for a `TimedRideHook`-completed rank too, since bypassing the
    engine's own completion check entirely is a bigger leap than any other
    write this mod does.
-3. Live-test Survivalist and Weapons Expert (the other two categories
-   with full 1-10 coverage) and Horseman past rank 8 (ranks 1, 4, 7, 8
-   need the player mounted -- now gated and message-prompted; ranks 2, 5
-   are plain stats; ranks 3, 6, 9 use `TimedRideHook`, see above).
-4. Check the categories that hit a real ceiling (Explorer at rank 2,
-   Master Hunter at rank 3, Sharpshooter -- rank 3 needs the
-   `OnMovingTrain` condition which isn't gated yet, rank 9 needs
-   `DeadeyeActive` similarly ungated) stop exactly there rather than
-   silently skipping past the unsupported/ungated one -- confirms the
-   "Linear means sequential" assumption this whole ceiling table rests
-   on.
-5. Find native checks for the two remaining live `Requirement` types
-   (`OnMovingTrain` -- `CHAL_CTX_ON_MOVING_TRAIN`, and `DeadeyeActive`)
-   so Sharpshooter ranks 3 and 9 get the same pre-check/message treatment
-   `OnMount` already has, instead of just a log NOTE and a possibly-silent
-   failure.
-6. Growing coverage past the remaining 13 genuinely unsupported goals
-   needs: for the 9 Explorer item-collection-list goals, finding the
-   native that marks a named collectable item as found; for the 4
-   group-stat goals, finding where a named stat GROUP's membership list
-   is defined (not in either real meta file). (The 3 Horseman timed rides
-   and 9 of the 10 Horseman compendium goals are no longer in this bucket
-   -- see `TimedRideHook` and `WriteKind::HorseCompendium` above. The
-   10th compendium goal, `ACW_HORSE_Rank_10_Arabian`, is commented out in
-   the real `challenges_sp.meta` and isn't required by any live rank, so
-   it's not worth chasing.)
+4. Live-test Survivalist and Weapons Expert (the other two categories
+   with full 1-10 coverage).
+5. Live-test the new Explorer `WriteKind::Collectable` rows (ranks 2-10,
+   via `COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND`, added 2026-09-18)
+   -- builds clean, never run in game yet.
+6. Check the categories that still hit a real ceiling (Sharpshooter at
+   rank 2 -- mixed group-stat, and Master Hunter at rank 3 -- group-stat)
+   stop exactly there rather than silently skipping past the unsupported
+   one -- confirms the "Linear means sequential" assumption this whole
+   ceiling table rests on. (Sharpshooter ranks 3 and 9 are individually
+   supported and gated -- `OnMovingTrain`/`DeadeyeActive` -- but moot
+   until rank 2 is resolved, since Linear presumably requires reaching
+   rank 2 first.)
+7. Find a native check for the one remaining live `Requirement` type
+   without one (`DeadeyeActive` -- `CAIConditionPlayerIsDeadeyeActive`)
+   so Sharpshooter rank 9 gets the same pre-check/message treatment
+   `OnMount` and `OnMovingTrain` already have, instead of just a log NOTE
+   and a possibly-silent failure.
+8. Growing coverage past the remaining 4 genuinely unsupported goals (all
+   `StatsGoalScoreSourceGroupStat`: Sharpshooter rank 2
+   `ACW_SHOT_Rank_02_Animals`, Master Hunter rank 3
+   `ACW_HUNT_Rank_03_Binoculars`, Herbalist rank 6
+   `ACW_HERB_Rank_06_PickingHerbs` and rank 9 `ACW_HERB_Rank_09_AllHerbs`)
+   needs finding where a named stat GROUP's membership list is defined --
+   not in either real meta file. (The 3 Horseman timed rides,
+   9 of the 10 Horseman compendium goals, and the 9 Explorer
+   item-collection-list goals are no longer in this bucket -- see
+   `TimedRideHook`, `WriteKind::HorseCompendium`, and
+   `WriteKind::Collectable` above. The 10th compendium goal,
+   `ACW_HORSE_Rank_10_Arabian`, is commented out in the real
+   `challenges_sp.meta` and isn't required by any live rank, so it's not
+   worth chasing.)

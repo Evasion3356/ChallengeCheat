@@ -85,11 +85,14 @@
 	item list" group, a "reach threshold on N different stats in a named
 	group" group, or (3 Horseman ranks) no `<scoreParam>` at all (a
 	location-to-location timed ride, evaluated live, not from a persisted
-	number) are NOT in the table -- see the coverage table in CLAUDE.md.
+	number) are NOT in the auto-generated part of the table -- see the
+	coverage table in CLAUDE.md. Two of those buckets got hand-added rows
+	after the fact: `WriteKind::HorseCompendium` (Horseman rank 10) and
+	`WriteKind::Collectable` (Explorer ranks 2-10, see below).
 
-	CURRENT COVERAGE: every rank of Bandit, Gambler, Survivalist, and
-	Weapons Expert (all 1-10). Explorer/Sharpshooter/Master Hunter/
-	Herbalist/Horseman each hit a real ceiling at a specific rank whose
+	CURRENT COVERAGE: every rank of Bandit, Explorer, Gambler, Horseman,
+	Survivalist, and Weapons Expert (all 1-10). Sharpshooter/Master
+	Hunter/Herbalist each hit a real ceiling at a specific rank whose
 	ONLY goal has no known mechanism at all yet -- see CLAUDE.md's table.
 	`AdvanceRank()` never claims success on a guess: it independently
 	re-reads `CHAL_GET_NUM_RANKS_COMPLETED` after writing and only reports
@@ -197,6 +200,7 @@ namespace
 		ScriptGoal,      // write the goal's own name via CHAL_ADD_GOAL_PROGRESS_INT
 		PointToPointHook, // scoped binary patch of the native completion check -- see TimedRideHook.h
 		HorseCompendium, // spawn modelHash's breed ped, call COMPENDIUM_HORSE_WILD_BROKEN, delete it
+		Collectable,     // mark baseId's named collectable item found via COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND
 	};
 
 	// A handful of real goals wrap their scoreParam in a
@@ -211,8 +215,23 @@ namespace
 	{
 		None,
 		OnMount,       // CAIConditionIsOnMount -- checked live via PED::IS_PED_ON_MOUNT
-		OnMovingTrain, // CAIConditionGoalContext (CHAL_CTX_ON_MOVING_TRAIN) -- no native check found yet, logged as a note only
+		OnMovingTrain, // CAIConditionGoalContext (CHAL_CTX_ON_MOVING_TRAIN) -- checked via PLAYER::IS_PLAYER_RIDING_TRAIN
 		DeadeyeActive, // CAIConditionPlayerIsDeadeyeActive -- no native check found yet, logged as a note only
+	};
+
+	// Step: advance the CURRENT rank's goal(s) by one small increment (e.g.
+	// "killed 1 more rabbit" toward a goal that needs 4) -- may or may not
+	// complete the rank on its own. Complete: push the goal's full target in
+	// one shot (the original design's only mode) -- always finishes the
+	// current rank if the write lands. For WriteKind::PointToPointHook and
+	// HorseCompendium there's no meaningful sub-unit to step through (each
+	// row IS one atomic, all-or-nothing native call -- a timed-ride unlock or
+	// one breed's compendium entry), so both modes apply every matching row
+	// for those kinds identically.
+	enum class WriteMode
+	{
+		Step,
+		Complete,
 	};
 
 	struct KnownWrite
@@ -221,7 +240,7 @@ namespace
 		int rank; // 1-indexed: this write contributes to reaching this rank
 		WriteKind kind;
 		const char* label;  // goal name -- always the goal's real <name>, for logging
-		const char* baseId; // Stat only: statId BaseId ("" if this stat has none)
+		const char* baseId; // Stat: statId BaseId ("" if this stat has none). Collectable: the collectable item's real name.
 		const char* permId; // Stat only: statId PermutationId ("" if none)
 		float value;
 		bool isFloat; // Stat: increment as float vs int. ScriptGoal: always false (int goals only so far)
@@ -230,35 +249,41 @@ namespace
 	};
 
 	// Centralizes the shared bookkeeping and logging for both stat types.
+	// `amount` is the actual increment to apply -- a small fixed step for
+	// WriteMode::Step, or write.value (the goal's full target, a safe
+	// overshoot) for WriteMode::Complete. See ApplyRankProgress.
 	void IncrementStatAndLog(
 		const KnownWrite& write,
 		StatId& id,
 		const CategoryInfo& categoryInfo,
-		int targetRank)
+		int targetRank,
+		const char* verb,
+		float amount)
 	{
 		if (write.isFloat)
 		{
-			STATS::_STAT_ID_INCREMENT_FLOAT(reinterpret_cast<Any*>(&id), write.value);
+			STATS::_STAT_ID_INCREMENT_FLOAT(reinterpret_cast<Any*>(&id), amount);
 			float readback = 0.0f;
 			BOOL ok = STATS::STAT_ID_GET_FLOAT(reinterpret_cast<Any*>(&id), &readback);
-			Log::Write("AdvanceRank({}): incremented stat BaseId='{}' PermutationId='{}' (goal '{}', rank {}) by {:.2f} -- readback: {} ({:.2f})",
-				categoryInfo.displayName, write.baseId, write.permId, write.label, targetRank, write.value, ok ? "ok" : "FAILED", readback);
+			Log::Write("{}({}): incremented stat BaseId='{}' PermutationId='{}' (goal '{}', rank {}) by {:.2f} -- readback: {} ({:.2f})",
+				verb, categoryInfo.displayName, write.baseId, write.permId, write.label, targetRank, amount, ok ? "ok" : "FAILED", readback);
 			return;
 		}
 
-		int value = static_cast<int>(write.value + 0.5f);
+		int value = static_cast<int>(amount + 0.5f);
 		STATS::_STAT_ID_INCREMENT_INT(reinterpret_cast<Any*>(&id), value);
 		int readback = 0;
 		BOOL ok = STATS::STAT_ID_GET_INT(reinterpret_cast<Any*>(&id), &readback);
-		Log::Write("AdvanceRank({}): incremented stat BaseId='{}' PermutationId='{}' (goal '{}', rank {}) by {} -- readback: {} ({})",
-			categoryInfo.displayName, write.baseId, write.permId, write.label, targetRank, value, ok ? "ok" : "FAILED", readback);
+		Log::Write("{}({}): incremented stat BaseId='{}' PermutationId='{}' (goal '{}', rank {}) by {} -- readback: {} ({})",
+			verb, categoryInfo.displayName, write.baseId, write.permId, write.label, targetRank, value, ok ? "ok" : "FAILED", readback);
 	}
 
 	// Auto-generated from the REAL challenges_sp.meta + goals_sp.meta
 	// (extracted from update_1.rpf, NOT the fake mod copy -- see this
-	// file's header comment). 217 write rows covering 121 of 138 goals
+	// file's header comment). 226 write rows covering 130 of 138 goals
 	// (112 auto-generated Stat/ScriptGoal/PointToPointHook rows, plus 9
-	// hand-added HorseCompendium rows for Horseman rank 10 -- see below).
+	// hand-added HorseCompendium rows for Horseman rank 10, plus 9
+	// hand-added Collectable rows for Explorer ranks 2-10 -- see below).
 	constexpr KnownWrite kKnownWrites[] = {
 		{ Category::Bandit, 1, WriteKind::Stat, "ACW_BAND_Rank_01_Townsfolk", "HOLD_UPS_IN_TOWN", "", 5.000000f, false },
 		{ Category::Bandit, 2, WriteKind::Stat, "ACW_BAND_Rank_02_CoachRobberies", "", "AMBIENT_COACH_ROBBED", 2.000000f, false },
@@ -273,6 +298,36 @@ namespace
 		{ Category::Bandit, 9, WriteKind::Stat, "ACW_BAND_Rank_09_HogtiedTrainTracks", "TIMES_HOGTIED_ONTO_TRAIN_TRACKS", "", 3.000000f, false },
 		{ Category::Bandit, 10, WriteKind::Stat, "ACW_BAND_Rank_10_TrainRobberies", "ROB_COMPLETED", "TRAIN", 5.000000f, false },
 		{ Category::Explorer, 1, WriteKind::ScriptGoal, "ACW_EXPL_Rank_01_Treasure", "", "", 1.000000f, false },
+		// Explorer ranks 2-10 (ACW_EXPL_Rank_{02..10}_Treasure) are all
+		// StatsGoalParamIntGroupSum over the SAME 18-item
+		// StatsGoalScoreSourceGroupCollectableList pool (TREASURE_HUNT_LOOT_
+		// {02,03,04,06,07,08,10,11,12,14,15,17,18,19,21,22,23,24} -- 01/05/09/
+		// 13/16/20 are excluded, per the real goals_sp.meta's own comment,
+		// because they're the treasure-map pickups that start each hunt
+		// chain, not loot), with desiredGoal climbing 1..9 -- found by
+		// reading the real goals_sp.meta directly (kKnownWrites' generator
+		// never emitted a row for these; it only handled Stat/Script leaves,
+		// not GroupCollectableList). The real mechanism: treasure_hunter.ysc.c
+		// (~line 218) calls COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND(
+		// itemHash, 1) once per real loot pickup, the same native the item's
+		// own pickup state machine uses -- calling it directly has no other
+		// side effect (the script's separate "big reward" toast switch for a
+		// few item IDs lives in the pickup state machine itself, not behind
+		// this native). Each rank below targets a distinct, not-yet-used pool
+		// item and pushes the FULL rank target as the increment amount (same
+		// "safe overshoot" convention as this table's auto-generated Stat sum
+		// rows) so each row alone satisfies that rank's desiredGoal regardless
+		// of what earlier ranks already contributed to the shared group sum.
+		// Builds clean; not yet live-tested.
+		{ Category::Explorer, 2, WriteKind::Collectable, "ACW_EXPL_Rank_02_Treasure", "TREASURE_HUNT_LOOT_02", "", 1.000000f, false },
+		{ Category::Explorer, 3, WriteKind::Collectable, "ACW_EXPL_Rank_03_Treasure", "TREASURE_HUNT_LOOT_03", "", 2.000000f, false },
+		{ Category::Explorer, 4, WriteKind::Collectable, "ACW_EXPL_Rank_04_Treasure", "TREASURE_HUNT_LOOT_04", "", 3.000000f, false },
+		{ Category::Explorer, 5, WriteKind::Collectable, "ACW_EXPL_Rank_05_Treasure", "TREASURE_HUNT_LOOT_06", "", 4.000000f, false },
+		{ Category::Explorer, 6, WriteKind::Collectable, "ACW_EXPL_Rank_06_Treasure", "TREASURE_HUNT_LOOT_07", "", 5.000000f, false },
+		{ Category::Explorer, 7, WriteKind::Collectable, "ACW_EXPL_Rank_07_Treasure", "TREASURE_HUNT_LOOT_08", "", 6.000000f, false },
+		{ Category::Explorer, 8, WriteKind::Collectable, "ACW_EXPL_Rank_08_Treasure", "TREASURE_HUNT_LOOT_10", "", 7.000000f, false },
+		{ Category::Explorer, 9, WriteKind::Collectable, "ACW_EXPL_Rank_09_Treasure", "TREASURE_HUNT_LOOT_11", "", 8.000000f, false },
+		{ Category::Explorer, 10, WriteKind::Collectable, "ACW_EXPL_Rank_10_Treasure", "TREASURE_HUNT_LOOT_12", "", 9.000000f, false },
 		{ Category::Gambler, 1, WriteKind::Stat, "ACW_GAMB_Rank_01_Poker", "WINS", "POKER_HAND", 5.000000f, false },
 		{ Category::Gambler, 2, WriteKind::Stat, "ACW_GAMB_Rank_02_Blackjack", "WINS", "BLACKJACK_DOUBLED_DOWN", 5.000000f, false },
 		{ Category::Gambler, 3, WriteKind::Stat, "ACW_GAMB_Rank_03_FiveFingerFillet", "WINS", "FIVE_FINGER", 3.000000f, false },
@@ -626,9 +681,27 @@ namespace ChallengeCheat
 		return STATS::CHAL_GET_MAX_RANKS(RootHash(category));
 	}
 
-	bool AdvanceRank(Category category)
+	// Shared implementation behind both AdvanceRank() (WriteMode::Step) and
+	// CompleteChallenge() (WriteMode::Complete). Fire-and-forget by design
+	// (2026-09-19): does NOT poll CHAL_GET_NUM_RANKS_COMPLETED before
+	// reporting success. An earlier version did poll for ~3s and reported
+	// failure if the counter hadn't moved yet -- live testing showed this
+	// was actively wrong, not just slow: writes that were genuinely
+	// completing the rank (visible on screen moments later) still got
+	// reported as "could not advance" because the challenge system's own
+	// re-evaluation regularly takes longer than the poll window. A Step-mode
+	// call is ALSO frequently not expected to complete the rank at all (that
+	// is the point of a step), so a rank-counter check was never the right
+	// success signal for this mode either. Returns true whenever at least
+	// one write was actually applied; false only when nothing could be
+	// attempted at all (already maxed, a live requirement gate blocks it, or
+	// the goal has no known mechanism) -- ALWAYS with g_lastFailureReason
+	// set in that case, since that's the only situation worth telling the
+	// player about on screen.
+	bool ApplyRankProgress(Category category, WriteMode mode)
 	{
 		g_lastFailureReason.clear();
+		const char* verb = (mode == WriteMode::Step) ? "AdvanceRank" : "CompleteChallenge";
 
 		// Scoped to this function's whole lifetime (not just the write-
 		// application loop below) so its destructor clears any still-armed
@@ -643,8 +716,9 @@ namespace ChallengeCheat
 
 		if (before >= maxRanks)
 		{
-			Log::Write("AdvanceRank({}): already at max rank ({}/{})",
-				Info(category).displayName, before, maxRanks);
+			g_lastFailureReason = std::string(Info(category).displayName) + " is already fully completed ("
+				+ std::to_string(before) + "/" + std::to_string(maxRanks) + ").";
+			Log::Write("{}({}): already at max rank ({}/{})", verb, Info(category).displayName, before, maxRanks);
 			return false;
 		}
 
@@ -655,9 +729,9 @@ namespace ChallengeCheat
 		// AIConditional wrapper can be a real runtime gate: writing
 		// KILLED/AT_RABBIT to 5 did nothing until the player was actually
 		// on horseback when the write happened. Checking Requirement::OnMount
-		// up front avoids burning a write (and the ~3s poll below) on an
-		// attempt that's guaranteed to fail, and tells the player exactly
-		// what to do instead of a bare "didn't work."
+		// up front avoids burning a write on an attempt that's guaranteed to
+		// fail, and tells the player exactly what to do instead of a bare
+		// "didn't work."
 		for (const auto& w : kKnownWrites)
 		{
 			if (w.category != category || w.rank != targetRank)
@@ -666,22 +740,24 @@ namespace ChallengeCheat
 			if (w.requirement == Requirement::OnMount && !PED::IS_PED_ON_MOUNT(PLAYER::PLAYER_PED_ID()))
 			{
 				g_lastFailureReason = "You must be on horseback for this one -- mount up and try again.";
-				Log::Write("AdvanceRank({}): rank {}'s goal '{}' requires being on horseback -- "
+				Log::Write("{}({}): rank {}'s goal '{}' requires being on horseback -- "
 					"mount up and try again. No change made.",
-					Info(category).displayName, targetRank, w.label);
+					verb, Info(category).displayName, targetRank, w.label);
 				return false;
 			}
-			if (w.requirement == Requirement::OnMovingTrain)
+			if (w.requirement == Requirement::OnMovingTrain && !PLAYER::IS_PLAYER_RIDING_TRAIN(PLAYER::PLAYER_ID()))
 			{
-				Log::Write("AdvanceRank({}): NOTE -- rank {}'s goal '{}' normally requires being on a "
-					"moving train (no native check found for this yet, attempting the write anyway).",
-					Info(category).displayName, targetRank, w.label);
+				g_lastFailureReason = "You must be riding a train for this one -- hop aboard and try again.";
+				Log::Write("{}({}): rank {}'s goal '{}' requires riding a train -- "
+					"hop aboard and try again. No change made.",
+					verb, Info(category).displayName, targetRank, w.label);
+				return false;
 			}
 			if (w.requirement == Requirement::DeadeyeActive)
 			{
-				Log::Write("AdvanceRank({}): NOTE -- rank {}'s goal '{}' normally requires Dead Eye "
+				Log::Write("{}({}): NOTE -- rank {}'s goal '{}' normally requires Dead Eye "
 					"being active (no native check found for this yet, attempting the write anyway).",
-					Info(category).displayName, targetRank, w.label);
+					verb, Info(category).displayName, targetRank, w.label);
 			}
 		}
 
@@ -705,12 +781,13 @@ namespace ChallengeCheat
 				// gameplay actually calls), and read back immediately after
 				// to separate "the stat write itself didn't land" from "it
 				// landed but the challenge system didn't react to it."
-				IncrementStatAndLog(w, id, Info(category), targetRank);
+				float amount = (mode == WriteMode::Complete) ? w.value : 1.0f;
+				IncrementStatAndLog(w, id, Info(category), targetRank, verb, amount);
 			}
 			else if (w.kind == WriteKind::ScriptGoal)
 			{
 				Hash goalHash = static_cast<Hash>(rage::Joaat(w.label));
-				int value = static_cast<int>(w.value + 0.5f);
+				int value = (mode == WriteMode::Complete) ? static_cast<int>(w.value + 0.5f) : 1;
 				// CHAL_SET_GOAL_PROGRESS_INT live-tested and failed here
 				// (Gambler rank 6, real ACW_GAMB_Rank_06_Blackjack_RHO/VAN
 				// goal names) even though these ARE genuinely script-
@@ -718,90 +795,86 @@ namespace ChallengeCheat
 				// for STAT_ID_SET_INT vs _STAT_ID_INCREMENT_INT. Using ADD
 				// instead on the same theory.
 				STATS::CHAL_ADD_GOAL_PROGRESS_INT(chalHash, goalHash, value);
-				Log::Write("AdvanceRank({}): added {} progress to script goal '{}' (rank {})",
-					Info(category).displayName, value, w.label, targetRank);
+				Log::Write("{}({}): added {} progress to script goal '{}' (rank {})",
+					verb, Info(category).displayName, value, w.label, targetRank);
 			}
 			else if (w.kind == WriteKind::PointToPointHook)
 			{
+				// No sub-unit to step through -- a timed-ride goal is a
+				// single native completion check with no persisted partial
+				// state, so Step and Complete both just fire the same
+				// one-shot unlock.
 				std::uint64_t timedRideGoalIndex = static_cast<std::uint64_t>(w.value + 0.5f);
 				if (!timedRideUnlock)
 					timedRideUnlock.emplace(timedRideGoalIndex);
 
 				if (!timedRideUnlock->IsReady())
 				{
-					Log::Write("AdvanceRank({}): FAILED to install native timed-ride completion hook for "
+					Log::Write("{}({}): FAILED to install native timed-ride completion hook for "
 						"goal '{}' (rank {}) -- signature not found or MinHook error (see log above). "
 						"Not counted as an applied write.",
-						Info(category).displayName, w.label, targetRank);
+						verb, Info(category).displayName, w.label, targetRank);
 					timedRideUnlock.reset();
 					continue;
 				}
 
-				Log::Write("AdvanceRank({}): enabled timed-ride unlock hook for goal '{}' (rank {}, "
+				Log::Write("{}({}): enabled timed-ride unlock hook for goal '{}' (rank {}, "
 					"timed-ride goal index/RDX={:#x}) -- hook will disable after the first matching call "
-					"or when this AdvanceRank() call returns.",
-					Info(category).displayName, w.label, targetRank, timedRideGoalIndex);
+					"or when this call returns.",
+					verb, Info(category).displayName, w.label, targetRank, timedRideGoalIndex);
 			}
-			else // WriteKind::HorseCompendium
+			else if (w.kind == WriteKind::HorseCompendium)
 			{
+				// No sub-unit to step through -- each row is one breed's
+				// compendium entry, an atomic spawn-and-break call with no
+				// partial state, so Step and Complete both apply every
+				// matching row (all 9 breeds for Horseman rank 10).
 				if (!SpawnAndBreakCompendiumHorse(w.modelHash, w.label))
 				{
-					Log::Write("AdvanceRank({}): FAILED to spawn/break compendium horse for goal '{}' "
+					Log::Write("{}({}): FAILED to spawn/break compendium horse for goal '{}' "
 						"(rank {}, model {:#x}) -- model never loaded or CREATE_PED failed (see log "
 						"above). Not counted as an applied write.",
-						Info(category).displayName, w.label, targetRank, w.modelHash);
+						verb, Info(category).displayName, w.label, targetRank, w.modelHash);
 					continue;
 				}
+			}
+			else // WriteKind::Collectable
+			{
+				Hash itemHash = static_cast<Hash>(rage::Joaat(w.baseId));
+				int amount = (mode == WriteMode::Complete) ? static_cast<int>(w.value + 0.5f) : 1;
+				// Same native the real pickup state machine uses
+				// (treasure_hunter.ysc.c's COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND
+				// call), just invoked directly instead of through a real pickup.
+				COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND(itemHash, amount);
+				Log::Write("{}({}): marked collectable '{}' found x{} for goal '{}' (rank {})",
+					verb, Info(category).displayName, w.baseId, amount, w.label, targetRank);
 			}
 			appliedCount++;
 		}
 
 		if (appliedCount == 0)
 		{
-			Log::Write("AdvanceRank({}): no known write for rank {} yet -- unsupported goal type "
-				"(compendium/collectable-list/group-stat/timed-ride, see CLAUDE.md). No change made.",
-				Info(category).displayName, targetRank);
+			g_lastFailureReason = "No known way to progress this goal yet -- see CLAUDE.md.";
+			Log::Write("{}({}): no known write for rank {} yet -- unsupported goal type "
+				"(group-stat, see CLAUDE.md). No change made.",
+				verb, Info(category).displayName, targetRank);
 			return false;
 		}
 
-		// Live-confirmed 2026-09-17: CHAL_GET_NUM_RANKS_COMPLETED does NOT
-		// reflect a stat write in the same tick it happened on -- a real
-		// test showed the rank counter still read the old value
-		// immediately after a correct, readback-confirmed stat write, but
-		// the in-game toast/menu DID show the rank completing a moment
-		// later once the player waited. So this polls for up to ~3 seconds
-		// (WAIT() yields back to the game between checks, giving whatever
-		// background re-evaluation the challenge system does a chance to
-		// run) before concluding the write didn't take -- never claims
-		// success without an actual observed increase, just gives the game
-		// a realistic window to report one.
-		for (int attempt = 0; attempt < 6; attempt++)
-		{
-			int after = STATS::CHAL_GET_NUM_RANKS_COMPLETED(chalHash);
-			if (after > before)
-			{
-				Log::Write("AdvanceRank({}): CONFIRMED -- rank {} -> {} ({} write(s) applied, "
-					"observed after {} poll(s))", Info(category).displayName, before, after, appliedCount, attempt);
-				return true;
-			}
-			WAIT(500);
-		}
+		Log::Write("{}({}): applied {} write(s) for rank {} (mode={}) -- fire-and-forget, "
+			"not polling for the rank counter to move. Check the menu's live Rank X/Y readout "
+			"or the log for the real outcome.",
+			verb, Info(category).displayName, appliedCount, targetRank, mode == WriteMode::Step ? "step" : "complete");
+		return true;
+	}
 
-		int finalCount = STATS::CHAL_GET_NUM_RANKS_COMPLETED(chalHash);
-		Log::Write("AdvanceRank({}): applied {} write(s) for rank {} but the rank counter did NOT "
-			"increase after ~3s of polling (still {}).",
-			Info(category).displayName, appliedCount, targetRank, finalCount);
-		return false;
+	bool AdvanceRank(Category category)
+	{
+		return ApplyRankProgress(category, WriteMode::Step);
 	}
 
 	int CompleteChallenge(Category category)
 	{
-		int advanced = 0;
-		while (AdvanceRank(category))
-			advanced++;
-
-		Log::Write("CompleteChallenge({}): advanced {} rank(s) this call, now {}/{}",
-			Info(category).displayName, advanced, GetRanksCompleted(category), GetMaxRanks(category));
-		return advanced;
+		return ApplyRankProgress(category, WriteMode::Complete) ? 1 : 0;
 	}
 }
