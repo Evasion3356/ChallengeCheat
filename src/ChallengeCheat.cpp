@@ -229,6 +229,31 @@ namespace
 		Hash modelHash = 0; // HorseCompendium only: the breed's ped model hash
 	};
 
+	// Centralizes the shared bookkeeping and logging for both stat types.
+	void IncrementStatAndLog(
+		const KnownWrite& write,
+		StatId& id,
+		const CategoryInfo& categoryInfo,
+		int targetRank)
+	{
+		if (write.isFloat)
+		{
+			STATS::_STAT_ID_INCREMENT_FLOAT(reinterpret_cast<Any*>(&id), write.value);
+			float readback = 0.0f;
+			BOOL ok = STATS::STAT_ID_GET_FLOAT(reinterpret_cast<Any*>(&id), &readback);
+			Log::Write("AdvanceRank({}): incremented stat BaseId='{}' PermutationId='{}' (goal '{}', rank {}) by {:.2f} -- readback: {} ({:.2f})",
+				categoryInfo.displayName, write.baseId, write.permId, write.label, targetRank, write.value, ok ? "ok" : "FAILED", readback);
+			return;
+		}
+
+		int value = static_cast<int>(write.value + 0.5f);
+		STATS::_STAT_ID_INCREMENT_INT(reinterpret_cast<Any*>(&id), value);
+		int readback = 0;
+		BOOL ok = STATS::STAT_ID_GET_INT(reinterpret_cast<Any*>(&id), &readback);
+		Log::Write("AdvanceRank({}): incremented stat BaseId='{}' PermutationId='{}' (goal '{}', rank {}) by {} -- readback: {} ({})",
+			categoryInfo.displayName, write.baseId, write.permId, write.label, targetRank, value, ok ? "ok" : "FAILED", readback);
+	}
+
 	// Auto-generated from the REAL challenges_sp.meta + goals_sp.meta
 	// (extracted from update_1.rpf, NOT the fake mod copy -- see this
 	// file's header comment). 217 write rows covering 121 of 138 goals
@@ -332,14 +357,23 @@ namespace
 		// comment) so TimedRideHook::ScopedTimedRideUnlock can target exactly one
 		// goal instead of affecting whichever ones happen to be evaluated
 		// in the same tick -- see TimedRideHook.h/.cpp.
-		{ Category::Horseman, 3, WriteKind::PointToPointHook, "ACW_HORSE_Rank_03_TimedRide", "", "", 353.000000f, false }, // rdx 0x161
+		//
+		// These RDX values (0x161/0x164/0x167, spacing +3) were discovered via:
+		//   1. LML override with marker value (durationSeconds 300->13371337)
+		//   2. Cheat Engine "find out what accesses this address"
+		//   3. Verified unique across entire ~115MB image via idat.exe+IDAPython
+		// If a future game build changes the timed-ride evaluation, these indices
+		// may change. Signature scans for sub_140BAC640 and sub_140B9842C are
+		// already in place and will report failure if signatures don't match.
+		// See TimedRideHook.h/.cpp and CLAUDE.md for full research trail.
+		{ Category::Horseman, 3, WriteKind::PointToPointHook, "ACW_HORSE_Rank_03_TimedRide", "", "", 353.000000f, false }, // RDX=0x161
 		{ Category::Horseman, 4, WriteKind::Stat, "ACW_HORSE_Rank_04_LassoDrag", "LONGEST_DIST_DRAGGED", "", 1006.000000f, true, Requirement::OnMount },
 		{ Category::Horseman, 5, WriteKind::Stat, "ACW_HORSE_Rank_05_Trample", "KILLS", "ANIMAL", 5.000000f, false },
 		{ Category::Horseman, 5, WriteKind::Stat, "ACW_HORSE_Rank_05_Trample", "KILLS", "TRAMPLE", 1.000000f, false },
-		{ Category::Horseman, 6, WriteKind::PointToPointHook, "ACW_HORSE_Rank_06_TimedRide", "", "", 356.000000f, false }, // rdx 0x164
+		{ Category::Horseman, 6, WriteKind::PointToPointHook, "ACW_HORSE_Rank_06_TimedRide", "", "", 356.000000f, false }, // RDX=0x164
 		{ Category::Horseman, 7, WriteKind::Stat, "ACW_HORSE_Rank_07_KillNoDismount", "KILLS", "ENEMY", 7.000000f, false, Requirement::OnMount },
 		{ Category::Horseman, 8, WriteKind::Stat, "ACW_HORSE_Rank_08_Predators", "KILLS", "PREDATOR", 9.000000f, false, Requirement::OnMount },
-		{ Category::Horseman, 9, WriteKind::PointToPointHook, "ACW_HORSE_Rank_09_TimedRide", "", "", 359.000000f, false }, // rdx 0x167
+		{ Category::Horseman, 9, WriteKind::PointToPointHook, "ACW_HORSE_Rank_09_TimedRide", "", "", 359.000000f, false }, // RDX=0x167
 		// Rank 10 requires ALL 9 of these goals (challenges_sp.meta lists
 		// them together under one rank's <goalHashes>, not as alternatives --
 		// Arabian is commented out in the real file, so only 9 breeds are
@@ -534,6 +568,16 @@ namespace
 		}
 
 		Ped playerPed = PLAYER::PLAYER_PED_ID();
+
+		// Defensive check -- in singleplayer with a valid player, this should never be 0
+		if (playerPed == 0)
+		{
+			Log::Write("SpawnAndBreakCompendiumHorse: PLAYER_PED_ID() returned invalid ped for goal '{}'",
+				label);
+			STREAMING::SET_MODEL_AS_NO_LONGER_NEEDED(modelHash);
+			return false;
+		}
+
 		Vector3 coords = ENTITY::GET_ENTITY_COORDS(playerPed, true, true);
 		// A few meters off to the side is enough to avoid spawning inside
 		// the player; exact placement doesn't matter since this ped is
@@ -661,23 +705,7 @@ namespace ChallengeCheat
 				// gameplay actually calls), and read back immediately after
 				// to separate "the stat write itself didn't land" from "it
 				// landed but the challenge system didn't react to it."
-				if (w.isFloat)
-				{
-					STATS::_STAT_ID_INCREMENT_FLOAT(reinterpret_cast<Any*>(&id), w.value);
-					float readback = 0.0f;
-					BOOL ok = STATS::STAT_ID_GET_FLOAT(reinterpret_cast<Any*>(&id), &readback);
-					Log::Write("AdvanceRank({}): incremented stat BaseId='{}' PermutationId='{}' (goal '{}', rank {}) by {:.2f} -- readback: {} ({:.2f})",
-						Info(category).displayName, w.baseId, w.permId, w.label, targetRank, w.value, ok ? "ok" : "FAILED", readback);
-				}
-				else
-				{
-					int value = static_cast<int>(w.value + 0.5f);
-					STATS::_STAT_ID_INCREMENT_INT(reinterpret_cast<Any*>(&id), value);
-					int readback = 0;
-					BOOL ok = STATS::STAT_ID_GET_INT(reinterpret_cast<Any*>(&id), &readback);
-					Log::Write("AdvanceRank({}): incremented stat BaseId='{}' PermutationId='{}' (goal '{}', rank {}) by {} -- readback: {} ({})",
-						Info(category).displayName, w.baseId, w.permId, w.label, targetRank, value, ok ? "ok" : "FAILED", readback);
-				}
+				IncrementStatAndLog(w, id, Info(category), targetRank);
 			}
 			else if (w.kind == WriteKind::ScriptGoal)
 			{

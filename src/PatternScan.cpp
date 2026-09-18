@@ -1,4 +1,5 @@
 #include "PatternScan.h"
+#include "Log.h"
 
 #include <windows.h>
 #include <vector>
@@ -86,9 +87,10 @@ namespace PatternScan
 
 		if (firstConcrete == patternLen)
 		{
-			// Pattern is all wildcards -- degenerate, nothing to anchor
-			// on. Not expected in practice; just report no match rather
-			// than doing anything meaningless.
+			// Pattern is all wildcards -- degenerate, nothing to anchor on.
+			// This is a bug in pattern generation, not normal usage.
+			// Log a warning to catch accidental all-wildcard patterns early.
+			Log::Write("PatternScan::FindInMainModule: WARNING -- pattern is all wildcards, cannot scan");
 			return std::nullopt;
 		}
 
