@@ -31,9 +31,10 @@ namespace
 
 	std::string FormatRank(ChallengeCheat::Category category)
 	{
+		const auto rankInfo = ChallengeCheat::GetRankInfo(category);
 		std::ostringstream oss;
-		oss << ChallengeCheat::GetDisplayName(category) << " " << ChallengeCheat::GetRanksCompleted(category)
-			<< " / " << ChallengeCheat::GetMaxRanks(category);
+		oss << ChallengeCheat::GetDisplayName(category) << " " << rankInfo.completed
+			<< " / " << rankInfo.max;
 		return oss.str();
 	}
 
@@ -44,9 +45,9 @@ namespace
 	// the button caption shows beforehand).
 	int NextRank(ChallengeCheat::Category category)
 	{
-		int next = ChallengeCheat::GetRanksCompleted(category) + 1;
-		int max = ChallengeCheat::GetMaxRanks(category);
-		return next > max ? max : next;
+		const auto rankInfo = ChallengeCheat::GetRankInfo(category);
+		int next = rankInfo.completed + 1;
+		return next > rankInfo.max ? rankInfo.max : next;
 	}
 
 	std::string FormatAdvanceCaption(ChallengeCheat::Category category)

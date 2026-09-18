@@ -151,10 +151,12 @@
 
 #include <cstddef>
 #include <cstring>
-#include <map>
+#include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 #include <optional>
+#include <array>
 
 namespace
 {
@@ -289,7 +291,7 @@ namespace
 	// WriteKind::StatDistinct Step bookkeeping: how many of a goal's rows
 	// Advance has credited so far this session, keyed by goal name. Not
 	// persisted -- after a restart mid-rank, Complete finishes the rank.
-	std::map<std::string, int> g_distinctStepsCredited;
+	std::unordered_map<std::string, int> g_distinctStepsCredited;
 
 	// Auto-generated from the REAL challenges_sp.meta + goals_sp.meta
 	// (extracted from update_1.rpf, NOT the fake mod copy -- see this
@@ -699,6 +701,21 @@ namespace
 		{ Category::WeaponsExpert, 10, WriteKind::Stat, "ACW_WEAP_Rank_10_Bear", "KILLS", "ONE_WEAPON", 1.000000f, false },
 	};
 
+	const std::vector<const KnownWrite*>& RankWritesFor(Category category, int rank)
+	{
+		static std::array<std::array<std::vector<const KnownWrite*>, 11>, static_cast<std::size_t>(Category::Count)> writeLookup{};
+		static bool initialized = false;
+		if (!initialized)
+		{
+			for (const auto& write : kKnownWrites)
+			{
+				writeLookup[static_cast<std::size_t>(write.category)][write.rank].push_back(&write);
+			}
+			initialized = true;
+		}
+		return writeLookup[static_cast<std::size_t>(category)][rank];
+	}
+
 	// Horseman rank 10's 9 goals each only ever check whether a specific
 	// breed's compendium entry has been marked "broken" -- there's no
 	// persisted counter or stat behind it at all (see kKnownWrites' own
@@ -781,14 +798,20 @@ namespace ChallengeCheat
 		return g_lastFailureReason;
 	}
 
+	RankInfo GetRankInfo(Category category)
+	{
+		const Hash rootHash = RootHash(category);
+		return { STATS::CHAL_GET_NUM_RANKS_COMPLETED(rootHash), STATS::CHAL_GET_MAX_RANKS(rootHash) };
+	}
+
 	int GetRanksCompleted(Category category)
 	{
-		return STATS::CHAL_GET_NUM_RANKS_COMPLETED(RootHash(category));
+		return GetRankInfo(category).completed;
 	}
 
 	int GetMaxRanks(Category category)
 	{
-		return STATS::CHAL_GET_MAX_RANKS(RootHash(category));
+		return GetRankInfo(category).max;
 	}
 
 	// Shared implementation behind both AdvanceRank() (WriteMode::Step) and
@@ -835,36 +858,35 @@ namespace ChallengeCheat
 		// up front avoids burning a write on an attempt that's guaranteed to
 		// fail, and tells the player exactly what to do instead of a bare
 		// "didn't work."
-		for (const auto& w : kKnownWrites)
+		const auto& rankWrites = RankWritesFor(category, targetRank);
+		for (const auto* w : rankWrites)
 		{
-			if (w.category != category || w.rank != targetRank)
-				continue;
-
-			if (w.requirement == Requirement::OnMount && !PED::IS_PED_ON_MOUNT(PLAYER::PLAYER_PED_ID()))
+			const auto& write = *w;
+			if (write.requirement == Requirement::OnMount && !PED::IS_PED_ON_MOUNT(PLAYER::PLAYER_PED_ID()))
 			{
 				g_lastFailureReason = "You must be on horseback for this one -- mount up and try again.";
 				Log::Write("{}({}): rank {}'s goal '{}' requires being on horseback -- "
 					"mount up and try again. No change made.",
-					verb, Info(category).displayName, targetRank, w.label);
+					verb, Info(category).displayName, targetRank, write.label);
 				return false;
 			}
-			if (w.requirement == Requirement::OnMovingTrain && !PLAYER::IS_PLAYER_RIDING_TRAIN(PLAYER::PLAYER_ID()))
+			if (write.requirement == Requirement::OnMovingTrain && !PLAYER::IS_PLAYER_RIDING_TRAIN(PLAYER::PLAYER_ID()))
 			{
 				g_lastFailureReason = "You must be riding a train for this one -- hop aboard and try again.";
 				Log::Write("{}({}): rank {}'s goal '{}' requires riding a train -- "
 					"hop aboard and try again. No change made.",
-					verb, Info(category).displayName, targetRank, w.label);
+					verb, Info(category).displayName, targetRank, write.label);
 				return false;
 			}
-			if (w.requirement == Requirement::ScopedKit && !SCRIPT::_IS_GOAL_CONTEXT_ACTIVE(static_cast<Hash>(rage::Joaat("CHAL_CTX_SCOPED_KIT"))))
+			if (write.requirement == Requirement::ScopedKit && !SCRIPT::_IS_GOAL_CONTEXT_ACTIVE(static_cast<Hash>(rage::Joaat("CHAL_CTX_SCOPED_KIT"))))
 			{
 				g_lastFailureReason = "Raise your binoculars (or scope) for this one and try again.";
 				Log::Write("{}({}): rank {}'s goal '{}' requires the scoped-kit context (binoculars/scope up) -- "
 					"not active. No change made.",
-					verb, Info(category).displayName, targetRank, w.label);
+					verb, Info(category).displayName, targetRank, write.label);
 				return false;
 			}
-			if (w.requirement == Requirement::DeadeyeActive)
+			if (write.requirement == Requirement::DeadeyeActive)
 			{
 				// The game only keeps Dead Eye on while aiming a weapon, and forcing
 				// it from script drops right back off (live-tested), so the player
@@ -875,7 +897,7 @@ namespace ChallengeCheat
 					g_lastFailureReason = "You must be aiming a weapon with Dead Eye active for this one -- aim, activate Dead Eye, and try again.";
 					Log::Write("{}({}): rank {}'s goal '{}' requires aiming with Dead Eye active -- "
 						"not aiming. No change made.",
-						verb, Info(category).displayName, targetRank, w.label);
+						verb, Info(category).displayName, targetRank, write.label);
 					return false;
 				}
 				if (!PLAYER::_IS_SPECIAL_ABILITY_ACTIVE(player))
@@ -883,7 +905,7 @@ namespace ChallengeCheat
 					g_lastFailureReason = "Dead Eye must be active for this one -- activate it and try again.";
 					Log::Write("{}({}): rank {}'s goal '{}' requires Dead Eye to be active -- "
 						"activate it and try again. No change made.",
-						verb, Info(category).displayName, targetRank, w.label);
+						verb, Info(category).displayName, targetRank, write.label);
 					return false;
 				}
 			}
@@ -912,21 +934,16 @@ namespace ChallengeCheat
 		// logged before every write so a "did nothing" report can be told apart
 		// from "goal wasn't even active" without another build.
 		{
-			std::vector<const char*> seenLabels;
-			for (const auto& w : kKnownWrites)
+			std::unordered_set<std::string> seenLabels;
+			for (const auto* w : rankWrites)
 			{
-				if (w.category != category || w.rank != targetRank)
+				const auto& write = *w;
+				if (seenLabels.insert(write.label).second == false)
 					continue;
-				bool seen = false;
-				for (const char* label : seenLabels)
-					seen = seen || std::strcmp(label, w.label) == 0;
-				if (seen)
-					continue;
-				seenLabels.push_back(w.label);
 				Log::Write("{}({}): rank counter={}/{}, goal '{}' active={}",
 					verb, Info(category).displayName,
 					STATS::CHAL_GET_NUM_RANKS_COMPLETED(chalHash), STATS::CHAL_GET_MAX_RANKS(chalHash),
-					w.label, STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(w.label))) != FALSE);
+					write.label, STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(write.label))) != FALSE);
 			}
 		}
 
@@ -939,15 +956,16 @@ namespace ChallengeCheat
 		{
 			int total = 0;
 			int active = 0;
-			for (const auto& w : kKnownWrites)
+			for (const auto* w : rankWrites)
 			{
-				if (w.category != category || w.rank != targetRank || w.kind != WriteKind::HorseCompendium)
+				const auto& write = *w;
+				if (write.kind != WriteKind::HorseCompendium)
 					continue;
 				++total;
-				const bool isActive = STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(w.label))) != FALSE;
+				const bool isActive = STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(write.label))) != FALSE;
 				if (isActive)
 					++active;
-				Log::Write("{}({}): goal '{}' active={}", verb, Info(category).displayName, w.label, isActive);
+				Log::Write("{}({}): goal '{}' active={}", verb, Info(category).displayName, write.label, isActive);
 			}
 			compendiumGoalStateUsable = active > 0 && active < total;
 			if (total > 0)
@@ -962,17 +980,15 @@ namespace ChallengeCheat
 		const char* distinctRowLabel = nullptr;
 		int distinctRowIndex = 0;
 		int compendiumRowIndex = 0;
-		std::vector<const char*> steppedSumGoals;
-		for (const auto& w : kKnownWrites)
+		std::unordered_set<std::string> steppedSumGoals;
+		for (const auto* w : rankWrites)
 		{
-			if (w.category != category || w.rank != targetRank)
-				continue;
-
-			if (w.kind == WriteKind::Stat || w.kind == WriteKind::StatSum || w.kind == WriteKind::StatDistinct || w.kind == WriteKind::StatAtOnce)
+			const auto& write = *w;
+			if (write.kind == WriteKind::Stat || write.kind == WriteKind::StatSum || write.kind == WriteKind::StatDistinct || write.kind == WriteKind::StatAtOnce)
 			{
 				StatId id{
-					static_cast<Hash>(rage::Joaat(w.baseId)),
-					static_cast<Hash>(rage::Joaat(w.permId))
+					static_cast<Hash>(rage::Joaat(write.baseId)),
+					static_cast<Hash>(rage::Joaat(write.permId))
 				};
 				// Real script call sites (e.g. dominoes_sp.ysc.c's func_606)
 				// only ever use _STAT_ID_INCREMENT_INT/_FLOAT for progress --
@@ -982,8 +998,8 @@ namespace ChallengeCheat
 				// gameplay actually calls), and read back immediately after
 				// to separate "the stat write itself didn't land" from "it
 				// landed but the challenge system didn't react to it."
-				float amount = (mode == WriteMode::Complete || w.kind == WriteKind::StatAtOnce) ? w.value : 1.0f;
-				if (w.kind == WriteKind::StatDistinct && mode == WriteMode::Step)
+				float amount = (mode == WriteMode::Complete || write.kind == WriteKind::StatAtOnce) ? write.value : 1.0f;
+				if (write.kind == WriteKind::StatDistinct && mode == WriteMode::Step)
 				{
 					// One click = one new distinct item. Which row is next is
 					// tracked per goal by our own counter, NOT by reading the
@@ -993,34 +1009,30 @@ namespace ChallengeCheat
 					// incremented here, and skipping already-nonzero stats
 					// left the goal one short (14 of 15).
 					sawDistinctStep = true;
-					if (distinctRowLabel == nullptr || std::strcmp(distinctRowLabel, w.label) != 0)
+					if (distinctRowLabel == nullptr || std::strcmp(distinctRowLabel, write.label) != 0)
 					{
-						distinctRowLabel = w.label;
+						distinctRowLabel = write.label;
 						distinctRowIndex = 0;
 					}
 					const int rowIndex = distinctRowIndex++;
-					if (distinctStepDone || rowIndex != g_distinctStepsCredited[w.label])
+					if (distinctStepDone || rowIndex != g_distinctStepsCredited[write.label])
 						continue;
 					distinctStepDone = true;
-					++g_distinctStepsCredited[w.label];
+					++g_distinctStepsCredited[write.label];
 				}
-				if (w.kind == WriteKind::StatSum && mode == WriteMode::Step)
+				if (write.kind == WriteKind::StatSum && mode == WriteMode::Step)
 				{
 					// The goal adds these stats together, so +1 on each row would
 					// be +N total. Credit one per goal per click.
-					bool alreadyStepped = false;
-					for (const char* label : steppedSumGoals)
-						alreadyStepped = alreadyStepped || std::strcmp(label, w.label) == 0;
-					if (alreadyStepped)
+					if (!steppedSumGoals.insert(write.label).second)
 						continue;
-					steppedSumGoals.push_back(w.label);
 				}
-				IncrementStatAndLog(w, id, Info(category), targetRank, verb, amount);
+				IncrementStatAndLog(write, id, Info(category), targetRank, verb, amount);
 			}
-			else if (w.kind == WriteKind::ScriptGoal)
+			else if (write.kind == WriteKind::ScriptGoal)
 			{
-				Hash goalHash = static_cast<Hash>(rage::Joaat(w.label));
-				int value = (mode == WriteMode::Complete) ? static_cast<int>(w.value + 0.5f) : 1;
+				Hash goalHash = static_cast<Hash>(rage::Joaat(write.label));
+				int value = (mode == WriteMode::Complete) ? static_cast<int>(write.value + 0.5f) : 1;
 				// CHAL_SET_GOAL_PROGRESS_INT live-tested and failed here
 				// (Gambler rank 6, real ACW_GAMB_Rank_06_Blackjack_RHO/VAN
 				// goal names) even though these ARE genuinely script-
@@ -1029,15 +1041,15 @@ namespace ChallengeCheat
 				// instead on the same theory.
 				STATS::CHAL_ADD_GOAL_PROGRESS_INT(chalHash, goalHash, value);
 				Log::Write("{}({}): added {} progress to script goal '{}' (rank {})",
-					verb, Info(category).displayName, value, w.label, targetRank);
+					verb, Info(category).displayName, value, write.label, targetRank);
 			}
-			else if (w.kind == WriteKind::PointToPointHook)
+			else if (write.kind == WriteKind::PointToPointHook)
 			{
 				// No sub-unit to step through -- a timed-ride goal is a
 				// single native completion check with no persisted partial
 				// state, so Step and Complete both just fire the same
 				// one-shot unlock.
-				std::uint64_t timedRideGoalIndex = static_cast<std::uint64_t>(w.value + 0.5f);
+				std::uint64_t timedRideGoalIndex = static_cast<std::uint64_t>(write.value + 0.5f);
 				// Stays armed AFTER this call returns -- the engine's own
 				// periodic check is what fires it; TimedRideHook::Update()
 				// (called from ScriptMain's loop) tears it down afterwards.
@@ -1046,16 +1058,16 @@ namespace ChallengeCheat
 					Log::Write("{}({}): FAILED to install native timed-ride completion hook for "
 						"goal '{}' (rank {}) -- signature not found or MinHook error (see log above). "
 						"Not counted as an applied write.",
-						verb, Info(category).displayName, w.label, targetRank);
+						verb, Info(category).displayName, write.label, targetRank);
 					continue;
 				}
 
 				Log::Write("{}({}): enabled timed-ride unlock hook for goal '{}' (rank {}, "
 					"timed-ride goal index/RDX={:#x}) -- hook stays armed until the engine's next check "
 					"unlocks it (or it times out).",
-					verb, Info(category).displayName, w.label, targetRank, timedRideGoalIndex);
+					verb, Info(category).displayName, write.label, targetRank, timedRideGoalIndex);
 			}
-			else if (w.kind == WriteKind::HorseCompendium)
+			else if (write.kind == WriteKind::HorseCompendium)
 			{
 				// Each row is one breed's compendium entry (an atomic
 				// spawn-and-break call). Complete applies every row (all 9
@@ -1074,7 +1086,7 @@ namespace ChallengeCheat
 					{
 						// The game tracks each breed as its own goal; skip the
 						// ones it already considers complete.
-						if (!STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(w.label))))
+						if (!STATS::CHAL_IS_GOAL_ACTIVE(chalHash, static_cast<Hash>(rage::Joaat(write.label))))
 							continue;
 					}
 					else
@@ -1086,25 +1098,25 @@ namespace ChallengeCheat
 					}
 					distinctStepDone = true;
 				}
-				if (!SpawnAndBreakCompendiumHorse(w.modelHash, w.label))
+				if (!SpawnAndBreakCompendiumHorse(write.modelHash, write.label))
 				{
 					Log::Write("{}({}): FAILED to spawn/break compendium horse for goal '{}' "
 						"(rank {}, model {:#x}) -- model never loaded or CREATE_PED failed (see log "
 						"above). Not counted as an applied write.",
-						verb, Info(category).displayName, w.label, targetRank, w.modelHash);
+						verb, Info(category).displayName, write.label, targetRank, write.modelHash);
 					continue;
 				}
 			}
 			else // WriteKind::Collectable
 			{
-				Hash itemHash = static_cast<Hash>(rage::Joaat(w.baseId));
-				int amount = (mode == WriteMode::Complete) ? static_cast<int>(w.value + 0.5f) : 1;
+				Hash itemHash = static_cast<Hash>(rage::Joaat(write.baseId));
+				int amount = (mode == WriteMode::Complete) ? static_cast<int>(write.value + 0.5f) : 1;
 				// Same native the real pickup state machine uses
 				// (treasure_hunter.ysc.c's COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND
 				// call), just invoked directly instead of through a real pickup.
 				COLLECTABLE::_COLLECTABLE_INCREMENT_NUM_FOUND(itemHash, amount);
 				Log::Write("{}({}): marked collectable '{}' found x{} for goal '{}' (rank {})",
-					verb, Info(category).displayName, w.baseId, amount, w.label, targetRank);
+					verb, Info(category).displayName, write.baseId, amount, write.label, targetRank);
 			}
 			appliedCount++;
 		}

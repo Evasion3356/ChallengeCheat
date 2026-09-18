@@ -31,9 +31,16 @@ namespace ChallengeCheat
 
 	const char* GetDisplayName(Category category);
 
+	struct RankInfo
+	{
+		int completed = 0;
+		int max = 0;
+	};
+
 	// STATS::CHAL_GET_NUM_RANKS_COMPLETED / CHAL_GET_MAX_RANKS passthroughs
 	// for the category's root hash. Safe to call every frame (menu status
 	// line does exactly that).
+	RankInfo GetRankInfo(Category category);
 	int GetRanksCompleted(Category category);
 	int GetMaxRanks(Category category);
 
