@@ -21,6 +21,12 @@
     <ClCompile Include="src\script.cpp" />
     <ClCompile Include="src\scriptmenu.cpp" />
     <ClCompile Include="src\ChallengeCheat.cpp" />
+    <ClCompile Include="src\PatternScan.cpp" />
+    <ClCompile Include="src\TimedRideHook.cpp" />
+    <ClCompile Include="external\minhook\src\hook.c" />
+    <ClCompile Include="external\minhook\src\buffer.c" />
+    <ClCompile Include="external\minhook\src\trampoline.c" />
+    <ClCompile Include="external\minhook\src\hde\hde64.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="external\ScriptHookSDK\inc\main.h" />
@@ -33,9 +39,17 @@
     <ClInclude Include="src\Log.h" />
     <ClInclude Include="src\ExtraNatives.h" />
     <ClInclude Include="src\ChallengeCheat.h" />
+    <ClInclude Include="src\PatternScan.h" />
+    <ClInclude Include="src\TimedRideHook.h" />
     <ClInclude Include="external\RDR-Classes\rage\joaat.hpp" />
     <ClInclude Include="external\spdlog\include\spdlog\spdlog.h" />
     <ClInclude Include="external\spdlog\include\spdlog\sinks\basic_file_sink.h" />
+    <ClInclude Include="external\minhook\include\MinHook.h" />
+    <ClInclude Include="external\minhook\src\buffer.h" />
+    <ClInclude Include="external\minhook\src\trampoline.h" />
+    <ClInclude Include="external\minhook\src\hde\hde64.h" />
+    <ClInclude Include="external\minhook\src\hde\table64.h" />
+    <ClInclude Include="external\minhook\src\hde\pstdint.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{A99F919E-1C4B-46AF-B324-1F072E00BA87}</ProjectGuid>
@@ -93,7 +107,7 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FloatingPointModel>Fast</FloatingPointModel>
       <LanguageStandard>stdcpplatest</LanguageStandard>
-      <AdditionalIncludeDirectories>external\spdlog\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>external\spdlog\include;external\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -123,7 +137,7 @@ copy /Y "$(TargetPath)" "%GAMEDIR%\$(TargetFileName)"</Command>
       <FloatingPointModel>Fast</FloatingPointModel>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <AdditionalIncludeDirectories>external\spdlog\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>external\spdlog\include;external\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>

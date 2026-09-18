@@ -114,8 +114,114 @@ still unverified):
 | Explorer | blocked at rank 2 (item-collection list) |
 | Sharpshooter | blocked at rank 2 (mixed group-stat) |
 | Master Hunter | blocked at rank 3 (group-stat) |
-| Horseman | blocked at rank 3 (timed ride, no scoreParam) |
+| Horseman | full 1-10 (ranks 3/6/9 via native binary patch, see below) |
 | Herbalist | blocked at rank 6 (group-stat) |
+
+**Horseman ranks 3/6/9 (`ACW_HORSE_Rank_{03,06,09}_TimedRide`) -- no
+native/script mechanism, but a real one found anyway (2026-09-17).**
+These are `StatsGoalPointToPoint` goals -- a ride between two named
+regions (rank 3: Valentine -> Rhodes, 300s; rank 6: Strawberry -> Saint
+Denis, 540s; rank 9: Van Horn -> Blackwater, 1020s), on mount and not
+following the game's own scripted road/rail route, with NO `<scoreParam>`
+in `goals_sp.meta` at all -- structurally a different goal shape than
+every other `StatsGoal`-based entry in this mod. Reversed all 1,638
+decompiled SP scripts for these goal names, `PointToPoint`, `TimedRide`,
+and both region volume names each rank uses: zero hits anywhere -- no
+script starts, stops, or reacts to this goal in any way. Every documented
+native lever was also tried and disproven, including
+`CHAL_ADD_GOAL_PROGRESS_INT(chalHash, joaat("ACW_HORSE_Rank_03_TimedRide"), 1)`
+(same generic native that works for real `StatsGoalScoreSourceScript`
+goals) -- applied twice, rank counter read 2 both before and after both
+attempts. `StatsGoalPointToPoint` doesn't consult the generic
+goal-progress register that native writes to, and its completion is
+evaluated entirely by native engine code with no script or documented
+native anywhere near it.
+
+The user then took a different approach: built an LML mod overriding
+`goals_sp.meta` to replace rank 3's `durationSeconds` (an int, inferred
+from the schema's float-formatting convention -- floats always emit
+`.000000`, this field never does) from `300` to a distinctive marker
+value (`13371337`, chosen to fit `int32` safely and be essentially
+impossible to collide with naturally-occurring game data), then used
+Cheat Engine's "find out what accesses this address" on the live-resident
+value. That led directly to `sub_140BAC640` (RDR2.exe+0xBAC640 in the
+analyzed build). Verified byte-for-byte against the user's own IDA
+database (`D:\Backup\Stuff\RDR2 Shit\EXEs\1491.50\RDR2_Dumped.exe.i64`,
+build 1491.50 -- read via `idat.exe` headless/batch mode + an IDAPython
+script, on an isolated scratch copy, never the live file) that the
+function's real shape is:
+
+```c
+if ( !a1[3].m128i_i64[0] || !a1[3].m128i_i64[1] )   // two null checks, offsets 0x30/0x38 from a1
+    return (char)sub_140B9842C(a1);                   // fallback, no tracking context
+return a1_vtable[0x210](a1);                          // real per-goal check (virtual call)
+```
+i.e. two `cmp qword ptr [rcx+30h],0` / `[rcx+38h],0` checks, each
+followed by `jz loc_140BAC929` (the fallback-and-return path), gate
+whether a virtual call through `a1`'s own vtable at `+0x210` -- almost
+certainly the actual per-goal evaluator -- ever runs at all.
+
+**First fix attempt (superseded): a raw jz->jmp byte patch, with a real
+bug.** The user's first live-confirmed fix converted the FIRST `jz` (at
+RDR2.exe+0xBAC65E) into an unconditional jump, forcing the fallback path
+regardless of whether that pointer is actually null -- a hand-encoded
+2-byte opcode flip (`0F 84` -> `90 E9`), scoped via RAII to only the few
+seconds `AdvanceRank()` was polling. This DID complete Horseman rank 3
+live. But it had a real bug: advancing rank 3 was later observed to also
+silently complete ranks 6 and 9, with no hook ever installed for them
+specifically (architecturally impossible for the byte-patch version to
+have touched them, since it only ever installed while `AdvanceRank()`'s
+`targetRank` was exactly 3, 6, or 9 in turn). The user correctly
+suspected the patch itself was the cause, not coincidental timing.
+
+**Root cause, confirmed via a pure-logging MinHook detour (zero effect on
+behavior, just observed arguments):** `sub_140BAC640` isn't called once
+per `AdvanceRank()` attempt -- it's called once per PointToPoint goal
+INSTANCE during a single shared periodic re-evaluation pass. Three calls
+were logged back-to-back in the exact same tick, one per goal, each with
+a different `a1` (goal-state struct pointers ~0x70 bytes apart) and,
+critically, a different RDX: `0x161`/`0x164`/`0x167` for ranks 3/6/9
+respectively -- consistently spaced by 3, a per-goal index/slot IDA's own
+decompile of `sub_140BAC640` never showed (it only recognized `a1`/RCX,
+but the Microsoft x64 ABI always passes arg2 in RDX regardless of
+whether the callee's own code visibly reads it -- declaring a second
+parameter on the detour observes it for free, no inline asm needed,
+which MSVC doesn't support on x64 anyway). The raw byte patch had no way
+to tell these three calls apart, so it forced success for whichever
+goal(s) happened to be evaluated during its brief active window -- often
+more than the one requested.
+
+**Current fix: a selective MinHook detour, not a byte patch.**
+`src/TimedRideHook.h`/`.cpp` (MinHook vendored as a real git submodule at
+`external/minhook`) hooks `sub_140BAC640` at its true entry point and
+inspects RDX itself. Only when RDX matches the specific goal currently
+being targeted does it short-circuit to `return (char)sub_140B9842C(a1)`
+-- exactly replicating the original function's own fallback behavior,
+just selectively, via `sub_140B9842C`'s own address (also located by AOB
+signature, extended far enough into the function body to be unique on
+its own -- a shorter attempt at this signature matched 3 different
+functions in the image). Every other call (any other RDX, or no target
+set at all) passes straight through to the real evaluation, completely
+unaffected -- so advancing rank 3 can no longer touch ranks 6/9. Both
+signatures confirmed unique (exactly 1 match each) across the whole
+~115MB image via the same `idat.exe` + IDAPython scan used throughout
+this investigation. The hook itself (`TimedRideHook::EnsureInstalled()`)
+is installed once and can stay installed for the mod's whole lifetime --
+it's a no-op unless a `TimedRideHook::ScopedTarget` is currently alive;
+only the target RDX is scoped (via RAII, same pattern as before) to the
+few seconds `AdvanceRank()` is polling for one specific rank.
+`WriteKind::PointToPointHook` rows in `kKnownWrites` store their target
+RDX in the `value` field (353/356/359 decimal = 0x161/0x164/0x167).
+`TimedRideHook::Uninstall()` is called from `main.cpp`'s `DllMain` on
+`DLL_PROCESS_DETACH` -- fully disables/removes the hook and calls
+`MH_Uninitialize()`, since MinHook is a process-wide library that
+shouldn't outlive this ASI's own load.
+
+**Not yet live-tested through the mod's own `AdvanceRank()` -- only the
+byte-patch version (now superseded) was confirmed live end-to-end. The
+selective version builds clean in both configurations but the actual
+fix for the "completes 6/9 for free" bug has not yet been re-verified
+in game.**
 
 **CONFIRMED LIVE (2026-09-17): writing the real stat works.** First
 attempt used `STATS::STAT_ID_SET_INT`/`_FLOAT` and failed -- readback
@@ -198,12 +304,17 @@ Runtime log: `<game folder>\ChallengeCheat.log`.
 
 ## Source layout
 
-Deliberately minimal -- this mod never reads raw script/game memory, only
-calls stock `STATS::CHAL_*` natives, so it needs none of the
-scrThread-pool/AOB-scanning/INI-config infrastructure the sibling
-advisor mods carry (an earlier pass of this file did include that
-infrastructure preemptively; it was removed once it became clear nothing
-in this mod actually used it).
+Mostly minimal -- almost everything goes through stock `STATS::CHAL_*`
+natives, so almost none of the scrThread-pool/AOB-scanning/INI-config
+infrastructure the sibling advisor mods carry is needed (an earlier pass
+of this file did include that infrastructure preemptively; it was
+removed once it became clear nothing in this mod actually used it). The
+one exception, added 2026-09-17: Horseman ranks 3/6/9's completion check
+turned out to have no native or script surface at all (see
+`ChallengeCheat.cpp`'s header comment) -- reaching it required vendoring
+`PatternScan.h/.cpp` back in (AOB signature scanning, unchanged from
+PokerCheat/DominoCheat's own copy) plus a new `TimedRideHook.h/.cpp` that
+does a scoped binary patch of the actual native function.
 
 - `src/main.cpp` -- `DllMain`, registers `ScriptMain` and the keyboard
   handler (both configurations -- see this file's own header comment for
@@ -238,8 +349,48 @@ in this mod actually used it).
   this mod vendors (`rage::Joaat()`, used to hash every goal/stat/root
   name into the `Hash` values the natives take). `external\inipp\` and
   the RDR-Classes `script\`/`atArray.hpp` headers were removed after the
-  Config/GamePointers/PatternScan modules that used them were deleted as
-  dead weight.
+  original Config/GamePointers/PatternScan modules that used them were
+  deleted as dead weight -- `PatternScan` itself came back (see below).
+- `src/PatternScan.h`/`.cpp` -- vendored unchanged from PokerCheat/
+  DominoCheat's own copy: a minimal AOB (array-of-bytes) scanner over
+  RDR2.exe's loaded image (`FindInMainModule`), plus RIP-relative operand
+  resolution (`ResolveRip`, unused by this mod so far).
+- `external/minhook` -- a real git submodule (`.gitmodules`, not vendored
+  by copying like everything else under `external\`), pointed at
+  TsudaKageyu/minhook. Used for one thing: a proper, trampoline-generating
+  inline hook on `sub_140BAC640` (see `TimedRideHook` below) instead of a
+  hand-encoded byte patch. Only `src/hook.c`, `src/buffer.c`,
+  `src/trampoline.c`, and `src/hde/hde64.c` (+ their headers) are built --
+  the x86-only `hde32.c` isn't needed for this x64-only project.
+- `src/TimedRideHook.h`/`.cpp` -- a selective MinHook detour on
+  `sub_140BAC640` (RDR2.exe+0xBAC640 in the analyzed build), the native
+  function that gates Horseman ranks 3/6/9's completion. An EARLIER
+  version of this file did a raw 2-byte opcode patch (`0F 84` jz -> `90
+  E9` nop+jmp) on one conditional jump inside the function -- this worked
+  live but had a real bug (advancing rank 3 silently completed ranks 6
+  and 9 too, since the patch couldn't tell which of the 3 timed-ride
+  goals a given call was for). The current version hooks the whole
+  function via MinHook and inspects RDX (a per-goal index, live-confirmed
+  via a logging-only detour: 0x161/0x164/0x167 for ranks 3/6/9), only
+  forcing `sub_140B9842C(a1)`'s fallback result when RDX matches the
+  specific goal being targeted (`TimedRideHook::ScopedTarget`, RAII-scoped
+  to the few seconds `AdvanceRank()` is polling -- see
+  `WriteKind::PointToPointHook` in `ChallengeCheat.cpp`, which stores each
+  rank's target RDX in the `value` field). The hook itself
+  (`TimedRideHook::EnsureInstalled()`) can stay installed for the mod's
+  whole lifetime since it's a no-op unless a target is set.
+  `TimedRideHook::Uninstall()` is called from `main.cpp`'s `DllMain` on
+  `DLL_PROCESS_DETACH` to fully disable/remove the hook and call
+  `MH_Uninitialize()`. See this file's own header comment for the full
+  discovery trail (LML-planted marker value in `goals_sp.meta` -> Cheat
+  Engine "find out what accesses this address" -> manual patch-and-verify
+  -> the byte-patch's own "completes 6/9 for free" bug -> a logging-only
+  MinHook detour explaining why (RDX) -> this selective version). Every
+  AOB signature involved (the hook target, `sub_140B9842C`'s own address,
+  and the original jz-anchored one from the superseded version) was
+  confirmed unique across the whole ~115MB image via a headless
+  `idat.exe` + IDAPython scan against the user's own IDA database, never
+  opening the live file directly.
 
 ## External resources
 
@@ -278,34 +429,42 @@ in this mod actually used it).
 
 ## Next concrete step
 
-1. **Confirm real reward-grant, not just the rank counter/pause-menu
+1. **Live-test the `TimedRideHook` binary patch through the mod's own
+   `AdvanceRank()` flow** (Horseman ranks 3, then 6, then 9) -- so far
+   only a manual debugger patch-and-verify has been confirmed live, not
+   the actual `WriteKind::PointToPointHook` code path. Watch the log for
+   "TimedRideHook: patched at..." / "...restored original bytes at..." to
+   confirm the AOB signature still resolves to the right address and the
+   scoped patch/restore cycle works cleanly (no leftover patched bytes if
+   `AdvanceRank()` returns early for any reason).
+2. **Confirm real reward-grant, not just the rank counter/pause-menu
    display**: Bandit ranks 3-10, Gambler, and Herbalist have all been
    live-confirmed to advance the rank counter correctly, but whether the
    actual reward (item/recipe/cosmetic) is granted alongside a
-   cheat-driven completion hasn't been independently checked yet.
-2. Live-test Survivalist and Weapons Expert (the other two categories
+   cheat-driven completion hasn't been independently checked yet -- worth
+   checking for a `TimedRideHook`-completed rank too, since bypassing the
+   engine's own completion check entirely is a bigger leap than any other
+   write this mod does.
+3. Live-test Survivalist and Weapons Expert (the other two categories
    with full 1-10 coverage) and Horseman past rank 8 (ranks 1, 4, 7, 8
    need the player mounted -- now gated and message-prompted; ranks 2, 5
-   are plain stats; rank 3, 6, 9 remain hard-blocked timed rides).
-3. Check the categories that hit a real ceiling (Explorer at rank 2,
+   are plain stats; ranks 3, 6, 9 use `TimedRideHook`, see above).
+4. Check the categories that hit a real ceiling (Explorer at rank 2,
    Master Hunter at rank 3, Sharpshooter -- rank 3 needs the
    `OnMovingTrain` condition which isn't gated yet, rank 9 needs
    `DeadeyeActive` similarly ungated) stop exactly there rather than
    silently skipping past the unsupported/ungated one -- confirms the
    "Linear means sequential" assumption this whole ceiling table rests
    on.
-4. Find native checks for the two remaining live `Requirement` types
+5. Find native checks for the two remaining live `Requirement` types
    (`OnMovingTrain` -- `CHAL_CTX_ON_MOVING_TRAIN`, and `DeadeyeActive`)
    so Sharpshooter ranks 3 and 9 get the same pre-check/message treatment
    `OnMount` already has, instead of just a log NOTE and a possibly-silent
    failure.
-5. Growing coverage past the 26 unsupported goals needs: for the 9
-   Explorer item-collection-list goals, finding the native that marks a
-   named collectable item as found; for the 4 group-stat goals, finding
-   where a named stat GROUP's membership list is defined (not in either
-   real meta file); for the 10 Horseman compendium goals, finding the
-   compendium-entry-completion native; for the 3 Horseman timed rides,
-   there may be no persisted-state mechanism to write at all (they're
-   evaluated live against player position/time, per
-   `StatsGoalPointToPoint`'s own `<startLocation>`/`<finishLocation>`/
-   `<condition>` fields).
+6. Growing coverage past the remaining 23 unsupported goals needs: for
+   the 9 Explorer item-collection-list goals, finding the native that
+   marks a named collectable item as found; for the 4 group-stat goals,
+   finding where a named stat GROUP's membership list is defined (not in
+   either real meta file); for the 10 Horseman compendium goals, finding
+   the compendium-entry-completion native. (The 3 Horseman timed rides
+   are no longer in this bucket -- see `TimedRideHook` above.)

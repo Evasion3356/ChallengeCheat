@@ -99,15 +99,53 @@
 	than the disproven goal-name-write theory (it's exactly what a
 	legitimate playthrough would have written), but it's still a claim
 	that needs a real test, not an assumption.
+
+	HORSEMAN RANKS 3/6/9 (the 3 StatsGoalPointToPoint "timed ride" goals,
+	no <scoreParam>, no script or documented native anywhere near them --
+	see this file's own coverage notes and CLAUDE.md): CONFIRMED LIVE
+	2026-09-17 that the completion check itself is `sub_140BAC640` in the
+	analyzed build (RDR2.exe+0xBAC640), found by planting a distinctive
+	marker value (durationSeconds 300 -> 13371337) via an LML-overridden
+	goals_sp.meta and using Cheat Engine's "find out what accesses this
+	address" on it.
+
+	A first fix patched one internal conditional jump to force the
+	function's own null-tracking-context fallback path unconditionally --
+	live-confirmed to complete Horseman rank 3, but with a bug: advancing
+	rank 3 also silently completed ranks 6 and 9 later, with no hook ever
+	installed for them specifically. A logging-only MinHook detour (zero
+	effect on behavior, just observed arguments) explained why:
+	sub_140BAC640 is called once per PointToPoint goal INSTANCE during a
+	single shared periodic re-evaluation pass -- three calls observed
+	back-to-back in the very same tick, one per goal, each with a
+	different `a1` and, critically, a different RDX value (0x161/0x164/
+	0x167 for ranks 3/6/9 respectively, consistently spaced by 3 -- a
+	per-goal index). The old unconditional patch had no way to tell these
+	apart, so it forced success for whichever goal(s) happened to be
+	evaluated during its brief patch window -- not always just the one
+	requested.
+
+	`WriteKind::PointToPointHook` below now uses a real MinHook detour
+	(TimedRideHook.h/.cpp) that inspects RDX and only forces the fallback
+	path (`return (char)sub_140B9842C(a1)`, exactly replicating the
+	original function's own behavior for an untracked goal) when RDX
+	matches the SPECIFIC goal being targeted -- every other call (any
+	other RDX) passes straight through to the real evaluation, completely
+	unaffected. The hook itself can stay installed for the mod's whole
+	lifetime (it's a no-op unless a ScopedTarget is currently alive); only
+	the target RDX is scoped to the few seconds AdvanceRank() is polling
+	for one specific rank.
 */
 
 #include "ChallengeCheat.h"
 #include "Log.h"
 #include "script.h"
+#include "TimedRideHook.h"
 
 #include "..\external\RDR-Classes\rage\joaat.hpp"
 
 #include <cstddef>
+#include <optional>
 
 namespace
 {
@@ -153,8 +191,9 @@ namespace
 
 	enum class WriteKind
 	{
-		Stat,       // write baseId/permId's real named stat directly
-		ScriptGoal, // write the goal's own name via CHAL_ADD_GOAL_PROGRESS_INT
+		Stat,            // write baseId/permId's real named stat directly
+		ScriptGoal,      // write the goal's own name via CHAL_ADD_GOAL_PROGRESS_INT
+		PointToPointHook, // scoped binary patch of the native completion check -- see TimedRideHook.h
 	};
 
 	// A handful of real goals wrap their scoreParam in a
@@ -272,11 +311,29 @@ namespace
 		{ Category::Herbalist, 10, WriteKind::Stat, "ACW_HERB_Rank_10_MatureVenisonSeasoning", "COOKED", "CONSUMABLE_MATURE_VENISON_THYME_COOKED", 1.000000f, false },
 		{ Category::Horseman, 1, WriteKind::Stat, "ACW_HORSE_Rank_01_Rabbits", "KILLED", "AT_RABBIT", 5.000000f, false, Requirement::OnMount },
 		{ Category::Horseman, 2, WriteKind::Stat, "ACW_HORSE_Rank_02_Obstacles", "", "HORSE_VAULTS", 3.000000f, false },
+		// Ranks 3/6/9 (ACW_HORSE_Rank_{03,06,09}_TimedRide) are
+		// StatsGoalPointToPoint goals -- no <scoreParam> at all in
+		// goals_sp.meta, and no script anywhere references these goal
+		// names, "PointToPoint"/"TimedRide", or either region volume
+		// (checked all 1,638 decompiled SP scripts). Every documented
+		// native/goal-progress lever was tried and disproven (see this
+		// file's header comment). CONFIRMED LIVE 2026-09-17: the real
+		// completion check is a native function (sub_140BAC640 in the
+		// analyzed build), and the specific goal it's evaluating on any
+		// given call is identified by RDX -- WriteKind::PointToPointHook
+		// rows store that value's target RDX in `value` (reusing the same
+		// field other WriteKinds use differently, per KnownWrite's own
+		// comment) so TimedRideHook::ScopedTarget can target exactly one
+		// goal instead of affecting whichever ones happen to be evaluated
+		// in the same tick -- see TimedRideHook.h/.cpp.
+		{ Category::Horseman, 3, WriteKind::PointToPointHook, "ACW_HORSE_Rank_03_TimedRide", "", "", 353.000000f, false }, // rdx 0x161
 		{ Category::Horseman, 4, WriteKind::Stat, "ACW_HORSE_Rank_04_LassoDrag", "LONGEST_DIST_DRAGGED", "", 1006.000000f, true, Requirement::OnMount },
 		{ Category::Horseman, 5, WriteKind::Stat, "ACW_HORSE_Rank_05_Trample", "KILLS", "ANIMAL", 5.000000f, false },
 		{ Category::Horseman, 5, WriteKind::Stat, "ACW_HORSE_Rank_05_Trample", "KILLS", "TRAMPLE", 1.000000f, false },
+		{ Category::Horseman, 6, WriteKind::PointToPointHook, "ACW_HORSE_Rank_06_TimedRide", "", "", 356.000000f, false }, // rdx 0x164
 		{ Category::Horseman, 7, WriteKind::Stat, "ACW_HORSE_Rank_07_KillNoDismount", "KILLS", "ENEMY", 7.000000f, false, Requirement::OnMount },
 		{ Category::Horseman, 8, WriteKind::Stat, "ACW_HORSE_Rank_08_Predators", "KILLS", "PREDATOR", 9.000000f, false, Requirement::OnMount },
+		{ Category::Horseman, 9, WriteKind::PointToPointHook, "ACW_HORSE_Rank_09_TimedRide", "", "", 359.000000f, false }, // rdx 0x167
 		{ Category::MasterHunter, 1, WriteKind::Stat, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_DEER", 3.000000f, false },
 		{ Category::MasterHunter, 1, WriteKind::Stat, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_BUCK", 3.000000f, false },
 		{ Category::MasterHunter, 1, WriteKind::Stat, "ACW_HUNT_Rank_01_Skin", "SKINNED", "AT_BUCK_LEGENDARY", 3.000000f, false },
@@ -429,6 +486,16 @@ namespace ChallengeCheat
 	{
 		g_lastFailureReason.clear();
 
+		// Scoped to this function's whole lifetime (not just the write-
+		// application loop below) so its destructor -- which clears the
+		// hook's target RDX back to "no target, pure passthrough" -- runs
+		// on EVERY return path, including the early "already at max rank"
+		// return. The hook itself (TimedRideHook::EnsureInstalled()) stays
+		// installed for the mod's whole lifetime once created; only this
+		// target is scoped to the couple of seconds this function is
+		// actively polling for a Horseman rank 3/6/9 completion.
+		std::optional<TimedRideHook::ScopedTarget> pointToPointTarget;
+
 		Hash chalHash = RootHash(category);
 		int before = STATS::CHAL_GET_NUM_RANKS_COMPLETED(chalHash);
 		int maxRanks = STATS::CHAL_GET_MAX_RANKS(chalHash);
@@ -515,7 +582,7 @@ namespace ChallengeCheat
 						Info(category).displayName, w.baseId, w.permId, w.label, targetRank, value, ok ? "ok" : "FAILED", readback);
 				}
 			}
-			else // WriteKind::ScriptGoal
+			else if (w.kind == WriteKind::ScriptGoal)
 			{
 				Hash goalHash = static_cast<Hash>(rage::Joaat(w.label));
 				int value = static_cast<int>(w.value + 0.5f);
@@ -528,6 +595,25 @@ namespace ChallengeCheat
 				STATS::CHAL_ADD_GOAL_PROGRESS_INT(chalHash, goalHash, value);
 				Log::Write("AdvanceRank({}): added {} progress to script goal '{}' (rank {})",
 					Info(category).displayName, value, w.label, targetRank);
+			}
+			else // WriteKind::PointToPointHook
+			{
+				if (!TimedRideHook::EnsureInstalled())
+				{
+					Log::Write("AdvanceRank({}): FAILED to install native timed-ride completion hook for "
+						"goal '{}' (rank {}) -- signature not found or MinHook error (see log above). "
+						"Not counted as an applied write.",
+						Info(category).displayName, w.label, targetRank);
+					continue;
+				}
+
+				std::uint64_t targetRdx = static_cast<std::uint64_t>(w.value + 0.5f);
+				if (!pointToPointTarget)
+					pointToPointTarget.emplace(targetRdx);
+
+				Log::Write("AdvanceRank({}): targeting rdx={:#x} for goal '{}' (rank {}) -- will stop "
+					"targeting once this AdvanceRank() call returns.",
+					Info(category).displayName, targetRdx, w.label, targetRank);
 			}
 			appliedCount++;
 		}

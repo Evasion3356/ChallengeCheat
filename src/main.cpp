@@ -7,6 +7,7 @@
 #include "..\external\ScriptHookSDK\inc\main.h"
 #include "script.h"
 #include "keyboard.h"
+#include "TimedRideHook.h"
 
 BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 {
@@ -23,6 +24,11 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 	case DLL_PROCESS_DETACH:
 		scriptUnregister(hInstance);
 		keyboardHandlerUnregister(OnKeyboardMessage);
+		// MinHook is a process-wide library -- fully disable/remove the
+		// hook and uninitialize it here rather than leaving it installed
+		// past this ASI's own lifetime (e.g. if the mod loader unloads
+		// this DLL without the process exiting).
+		TimedRideHook::Uninstall();
 		break;
 	}
 	return TRUE;
