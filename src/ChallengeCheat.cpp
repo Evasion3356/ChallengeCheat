@@ -133,10 +133,10 @@
 	original function's own behavior for an untracked goal) when RDX
 	matches the SPECIFIC goal being targeted -- every other call (any
 	other RDX) passes straight through to the real evaluation, completely
-	unaffected. The hook itself can stay installed for the mod's whole
-	lifetime (it's a no-op unless a ScopedTarget is currently alive); only
-	the target RDX is scoped to the few seconds AdvanceRank() is polling
-	for one specific rank.
+	unaffected. The hook is enabled for the targeted AdvanceRank() attempt
+	and disables itself immediately after the first matching RDX calls the
+	unlock/fallback function, so it does not remain hooked for the rest of
+	the poll window once the intended goal has fired.
 */
 
 #include "ChallengeCheat.h"
@@ -327,9 +327,9 @@ namespace
 		// completion check is a native function (sub_140BAC640 in the
 		// analyzed build), and the specific goal it's evaluating on any
 		// given call is identified by RDX -- WriteKind::PointToPointHook
-		// rows store that value's target RDX in `value` (reusing the same
+		// rows store that timed-ride goal index in `value` (reusing the same
 		// field other WriteKinds use differently, per KnownWrite's own
-		// comment) so TimedRideHook::ScopedTarget can target exactly one
+		// comment) so TimedRideHook::ScopedTimedRideUnlock can target exactly one
 		// goal instead of affecting whichever ones happen to be evaluated
 		// in the same tick -- see TimedRideHook.h/.cpp.
 		{ Category::Horseman, 3, WriteKind::PointToPointHook, "ACW_HORSE_Rank_03_TimedRide", "", "", 353.000000f, false }, // rdx 0x161
@@ -587,14 +587,11 @@ namespace ChallengeCheat
 		g_lastFailureReason.clear();
 
 		// Scoped to this function's whole lifetime (not just the write-
-		// application loop below) so its destructor -- which clears the
-		// hook's target RDX back to "no target, pure passthrough" -- runs
-		// on EVERY return path, including the early "already at max rank"
-		// return. The hook itself (TimedRideHook::EnsureInstalled()) stays
-		// installed for the mod's whole lifetime once created; only this
-		// target is scoped to the couple of seconds this function is
-		// actively polling for a Horseman rank 3/6/9 completion.
-		std::optional<TimedRideHook::ScopedTarget> pointToPointTarget;
+		// application loop below) so its destructor clears any still-armed
+		// timed-ride goal target and disables the hook on EVERY return path.
+		// If the targeted RDX is observed first, the detour calls the
+		// unlock/fallback function and disables itself immediately.
+		std::optional<TimedRideHook::ScopedTimedRideUnlock> timedRideUnlock;
 
 		Hash chalHash = RootHash(category);
 		int before = STATS::CHAL_GET_NUM_RANKS_COMPLETED(chalHash);
@@ -698,22 +695,24 @@ namespace ChallengeCheat
 			}
 			else if (w.kind == WriteKind::PointToPointHook)
 			{
-				if (!TimedRideHook::EnsureInstalled())
+				std::uint64_t timedRideGoalIndex = static_cast<std::uint64_t>(w.value + 0.5f);
+				if (!timedRideUnlock)
+					timedRideUnlock.emplace(timedRideGoalIndex);
+
+				if (!timedRideUnlock->IsReady())
 				{
 					Log::Write("AdvanceRank({}): FAILED to install native timed-ride completion hook for "
 						"goal '{}' (rank {}) -- signature not found or MinHook error (see log above). "
 						"Not counted as an applied write.",
 						Info(category).displayName, w.label, targetRank);
+					timedRideUnlock.reset();
 					continue;
 				}
 
-				std::uint64_t targetRdx = static_cast<std::uint64_t>(w.value + 0.5f);
-				if (!pointToPointTarget)
-					pointToPointTarget.emplace(targetRdx);
-
-				Log::Write("AdvanceRank({}): targeting rdx={:#x} for goal '{}' (rank {}) -- will stop "
-					"targeting once this AdvanceRank() call returns.",
-					Info(category).displayName, targetRdx, w.label, targetRank);
+				Log::Write("AdvanceRank({}): enabled timed-ride unlock hook for goal '{}' (rank {}, "
+					"timed-ride goal index/RDX={:#x}) -- hook will disable after the first matching call "
+					"or when this AdvanceRank() call returns.",
+					Info(category).displayName, w.label, targetRank, timedRideGoalIndex);
 			}
 			else // WriteKind::HorseCompendium
 			{

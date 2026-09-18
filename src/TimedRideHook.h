@@ -37,20 +37,20 @@
 // unconditionally, it hooks the whole function via MinHook (proper
 // trampoline generation, not hand-rolled) and inspects RDX itself. Only
 // when RDX matches the SPECIFIC goal currently being targeted (see
-// ScopedTarget) does it short-circuit to `return (char)sub_140B9842C(a1)`
-// -- exactly replicating the original function's own fallback path, just
-// selectively. Every other call (any other RDX, i.e. any other goal, or
-// no target set at all) passes straight through to the real function,
-// completely unaffected.
+// ScopedTimedRideUnlock) does it call `sub_140B9842C(a1)` -- the original
+// function's own unlock/fallback path -- then immediately disables the
+// hook before returning that result. Every other call (any other RDX, i.e.
+// any other goal, or no target set at all) passes straight through to the
+// real function, completely unaffected.
 namespace TimedRideHook
 {
-	// Locates and hooks sub_140BAC640 (and resolves sub_140B9842C's own
-	// address, needed by the detour) if not already done. Idempotent --
-	// safe to call every time before use. Returns false if either AOB
-	// signature isn't found or MinHook fails to create/enable the hook
-	// (see the log either way); the hook has zero effect on any goal in
-	// that case; callers should not count it as an applied write.
-	bool EnsureInstalled();
+	using ChallengeState = void;
+	using TimedRideGoalIndex = std::uint64_t;
+
+	// __fastcall is a no-op on x64 (one calling convention only) -- kept
+	// because these are native RDR2 function signatures recovered from IDA.
+	using TimedRideChallengeCheckFn = char(__fastcall*)(ChallengeState* challengeState, TimedRideGoalIndex timedRideGoalIndex);
+	using UnlockChallengeFn = std::uint64_t(__fastcall*)(ChallengeState* challengeState);
 
 	// Fully removes the hook and uninitializes MinHook. Call exactly once,
 	// on module unload (DllMain's DLL_PROCESS_DETACH) -- MinHook is a
@@ -58,22 +58,36 @@ namespace TimedRideHook
 	// past this ASI's own lifetime.
 	void Uninstall();
 
-	// RAII: while an instance is alive, any call to sub_140BAC640 whose
-	// observed RDX equals `targetRdx` gets short-circuited to
-	// `return (char)sub_140B9842C(a1)`. Every other RDX value (including
-	// while no ScopedTarget is alive at all) passes straight through to
-	// the real function, unaffected -- so this only ever touches the one
-	// specific goal being targeted, never "whichever goals happen to be
-	// evaluated while this happens to be active" the way the old
-	// unconditional patch did. Clears back to "no target" the moment the
-	// instance is destroyed.
-	class ScopedTarget
+	// RAII: constructing an instance locates/creates the MinHook hook if
+	// needed, arms it for one timed-ride goal index, and enables it. The
+	// first call to sub_140BAC640 whose observed RDX equals
+	// `targetTimedRideGoalIndex` calls sub_140B9842C(a1), disables the hook,
+	// and returns that result. Every other RDX value passes straight
+	// through to the real function, unaffected. If no matching call arrives
+	// before the instance is destroyed, the destructor clears the target and
+	// disables the hook.
+	class ScopedTimedRideUnlock
 	{
 	public:
-		explicit ScopedTarget(std::uint64_t targetRdx);
-		~ScopedTarget();
+		explicit ScopedTimedRideUnlock(TimedRideGoalIndex targetTimedRideGoalIndex);
+		~ScopedTimedRideUnlock();
 
-		ScopedTarget(const ScopedTarget&) = delete;
-		ScopedTarget& operator=(const ScopedTarget&) = delete;
+		bool IsReady() const;
+
+		ScopedTimedRideUnlock(const ScopedTimedRideUnlock&) = delete;
+		ScopedTimedRideUnlock& operator=(const ScopedTimedRideUnlock&) = delete;
+
+	private:
+		friend void Uninstall();
+
+		struct Runtime;
+
+		static Runtime& GetRuntime();
+		static bool CreateTimedRideChallengeCheckHook();
+		static bool EnableTimedRideChallengeCheckHook(TimedRideGoalIndex targetTimedRideGoalIndex);
+		static void DisableTimedRideChallengeCheckHook(const char* reason);
+		static char __fastcall TimedRideChallengeCheckDetour(ChallengeState* challengeState, TimedRideGoalIndex timedRideGoalIndex);
+
+		bool m_ready = false;
 	};
 }
