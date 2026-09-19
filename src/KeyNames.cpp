@@ -61,7 +61,7 @@ namespace
 		{ "QUOTE", VK_OEM_7 }, { "APOSTROPHE", VK_OEM_7 },
 	};
 
-	std::string Normalize(const std::string& text)
+	std::string Normalize(std::string_view text)
 	{
 		std::string out;
 		for (char c : text)
@@ -96,7 +96,7 @@ namespace KeyNames
 		}
 	}
 
-	bool Parse(const std::string& text, DWORD& vk)
+	bool Parse(std::string_view text, DWORD& vk)
 	{
 		const std::string name = Normalize(text);
 		if (name.empty())

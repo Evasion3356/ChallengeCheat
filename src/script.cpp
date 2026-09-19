@@ -18,10 +18,11 @@
 #include "scriptmenu.h" // pulls in script.h (natives/types/enums/main) and keyboard.h
 #include "Log.h"
 #include "ChallengeCheat.h"
+#include "Localization.h"
 #include "TimedRideHook.h"
 
 #include <array>
-#include <sstream>
+#include <string>
 
 namespace
 {
@@ -29,13 +30,14 @@ namespace
 	MenuBase* g_mainMenu = nullptr;
 	std::array<MenuBase*, static_cast<size_t>(ChallengeCheat::Category::Count)> g_categoryMenus{};
 
+	// Captions are rebuilt every draw, so append into one string rather than
+	// chaining operator+ temporaries.
 	std::string FormatRank(ChallengeCheat::Category category)
 	{
 		const auto rankInfo = ChallengeCheat::GetRankInfo(category);
-		std::ostringstream oss;
-		oss << ChallengeCheat::GetDisplayName(category) << " " << rankInfo.completed
-			<< " / " << rankInfo.max;
-		return oss.str();
+		std::string out(ChallengeCheat::GetDisplayName(category));
+		return out.append(" ").append(std::to_string(rankInfo.completed))
+			.append(" / ").append(std::to_string(rankInfo.max));
 	}
 
 	// The rank an Advance/Complete click on this category would target right
@@ -50,14 +52,17 @@ namespace
 		return next > rankInfo.max ? rankInfo.max : next;
 	}
 
-	std::string FormatAdvanceCaption(ChallengeCheat::Category category)
+	std::string FormatActionCaption(Localization::Msg verb, ChallengeCheat::Category category)
 	{
-		return "Advance " + std::string(ChallengeCheat::GetDisplayName(category)) + " " + std::to_string(NextRank(category));
+		std::string out(Localization::Text(verb));
+		return out.append(" ").append(ChallengeCheat::GetDisplayName(category))
+			.append(" ").append(std::to_string(NextRank(category)));
 	}
 
-	std::string FormatCompleteCaption(ChallengeCheat::Category category)
+	std::string FormatFailure(ChallengeCheat::Category category)
 	{
-		return "Complete " + std::string(ChallengeCheat::GetDisplayName(category)) + " " + std::to_string(NextRank(category));
+		std::string out(ChallengeCheat::GetDisplayName(category));
+		return out.append(": ").append(ChallengeCheat::GetLastAdvanceFailureReason());
 	}
 
 	// Fire-and-forget (2026-09-19): an empty return shows NO status popup at
@@ -71,27 +76,30 @@ namespace
 	{
 		if (ChallengeCheat::AdvanceRank(category))
 			return {};
-		return std::string(ChallengeCheat::GetDisplayName(category)) + ": "
-			+ ChallengeCheat::GetLastAdvanceFailureReason();
+		return FormatFailure(category);
 	}
 
 	std::string DoCompleteChallenge(ChallengeCheat::Category category)
 	{
 		if (ChallengeCheat::CompleteChallenge(category) > 0)
 			return {};
-		return std::string(ChallengeCheat::GetDisplayName(category)) + ": "
-			+ ChallengeCheat::GetLastAdvanceFailureReason();
+		return FormatFailure(category);
 	}
 
 	MenuBase* BuildCategoryMenu(ChallengeCheat::Category category)
 	{
-		MenuBase* menu = new MenuBase(new MenuItemTitle(ChallengeCheat::GetDisplayName(category)));
+		MenuBase* menu = new MenuBase(new MenuItemTitle(std::string(ChallengeCheat::GetDisplayName(category))));
 		menu->AddItem(new MenuItemLabel([category]() { return FormatRank(category); }));
+		// The game's own objective text for the rank a click would target.
+		menu->AddItem(new MenuItemParagraph([category]()
+		{
+			return Localization::RankObjective(static_cast<int>(category), NextRank(category)); // static data
+		}));
 		menu->AddItem(new MenuItemActionStatus(
-			[category]() { return FormatAdvanceCaption(category); },
+			[category]() { return FormatActionCaption(Localization::Msg::Advance, category); },
 			[category]() { return DoAdvanceRank(category); }));
 		menu->AddItem(new MenuItemActionStatus(
-			[category]() { return FormatCompleteCaption(category); },
+			[category]() { return FormatActionCaption(Localization::Msg::Complete, category); },
 			[category]() { return DoCompleteChallenge(category); }));
 		g_menuController.RegisterMenu(menu); // required for MenuItemMenu::OnSelect's PushMenu to accept it
 		return menu;
@@ -105,7 +113,7 @@ namespace
 		{
 			auto category = static_cast<ChallengeCheat::Category>(i);
 			g_categoryMenus[i] = BuildCategoryMenu(category);
-			g_mainMenu->AddItem(new MenuItemMenu(ChallengeCheat::GetDisplayName(category), g_categoryMenus[i]));
+			g_mainMenu->AddItem(new MenuItemMenu(std::string(ChallengeCheat::GetDisplayName(category)), g_categoryMenus[i]));
 		}
 
 		g_menuController.RegisterMenu(g_mainMenu);

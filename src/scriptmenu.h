@@ -16,6 +16,7 @@
 #include <windows.h>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <functional>
 
 using namespace std;
@@ -69,7 +70,7 @@ public:
 	virtual	string GetCaption() { return ""; }
 
 	float GetLineWidth()  { return m_lineWidth;  }
-	float GetLineHeight() { return m_lineHeight; }
+	virtual float GetLineHeight() { return m_lineHeight; }
 
 	ColorRgba GetColorRect() { return m_colorRect; }
 	ColorRgba GetColorText() { return m_colorText; }
@@ -197,6 +198,27 @@ public:
 		: MenuItemDefault(""),
 		m_captionFn(captionFn) {}
 	virtual string GetCaption() override { return m_captionFn ? m_captionFn() : ""; }
+	virtual void OnSelect() override {}
+};
+
+// ChallengeCheat addition: a read-only row that word-wraps a callback's text
+// over as many lines as it needs (recomputed when the text changes), so a
+// long localized objective ("Rob any 2 coaches or return any 2 stolen coaches
+// to the fence") stays inside the menu box. Row height grows with the line
+// count -- MenuBase::OnDraw already reads GetLineHeight() per item, which is
+// why that accessor is virtual. Selecting it does nothing.
+class MenuItemParagraph : public MenuItemDefault
+{
+	std::function<std::string_view()>	m_textFn; // view must stay valid until the next call
+	std::string							m_lastText;   // copied only when the text changes
+	std::vector<std::string>		m_lines;
+	void Refresh();
+public:
+	MenuItemParagraph(std::function<std::string_view()> textFn)
+		: MenuItemDefault(""),
+		m_textFn(textFn) {}
+	virtual float GetLineHeight() override;
+	virtual void OnDraw(float lineTop, float lineLeft, bool active) override;
 	virtual void OnSelect() override {}
 };
 

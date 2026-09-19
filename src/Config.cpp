@@ -69,6 +69,31 @@ namespace
 		}
 		general["MenuKey"] = KeyNames::Format(g_values.MenuKey);
 
+		g_values.Language = defaults.Language;
+		auto languageIt = general.find("Language");
+		if (languageIt != general.end() && !languageIt->second.empty())
+			g_values.Language = languageIt->second;
+		general["Language"] = g_values.Language;
+
+		g_values.WrapWidth = defaults.WrapWidth;
+		auto wrapIt = general.find("WrapWidth");
+		if (wrapIt != general.end())
+		{
+			try
+			{
+				const int width = std::stoi(wrapIt->second);
+				if (width == 0 || (width >= 10 && width <= 120))
+					g_values.WrapWidth = width;
+				else
+					Log::Write("Config::Reload -- WrapWidth {} is not 0 or 10-120 -- using {}", width, defaults.WrapWidth);
+			}
+			catch (const std::exception&)
+			{
+				Log::Write("Config::Reload -- WrapWidth '{}' is not a number -- using {}", wrapIt->second, defaults.WrapWidth);
+			}
+		}
+		general["WrapWidth"] = std::to_string(g_values.WrapWidth);
+
 		{
 			std::ofstream os(ResolveIniPath(), std::ios::trunc);
 			if (os)

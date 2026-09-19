@@ -20,13 +20,14 @@
 
 #include <windows.h>
 #include <string>
+#include <string_view>
 
 namespace KeyNames
 {
 	// Returns false (leaving `vk` untouched) if `text` isn't a recognized key
 	// name, or names a key this mod's own menu navigation already uses
 	// (see IsReserved).
-	bool Parse(const std::string& text, DWORD& vk);
+	bool Parse(std::string_view text, DWORD& vk);
 
 	// Canonical keycap-style name for a VK code that Parse() accepts; the
 	// result always round-trips back through Parse().

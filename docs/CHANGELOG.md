@@ -3,6 +3,26 @@
 All notable user-facing changes to ChallengeCheat are recorded here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- Localization into all 13 languages RDR2 ships with. Category names and
+  the Dead Eye term are the game's own per-language wording (extracted
+  from its text files, not translated); the Advance/Complete verbs and
+  the "can't do that yet" messages are LLM-assisted translations, not yet
+  reviewed by native speakers.
+- Each category submenu now shows the game's own objective text for the
+  next rank (e.g. "Hold up 5 townsfolk"), word-wrapped in the game's
+  language.
+- `[General] WrapWidth` in `ChallengeCheat.ini` (default 50; 0 = never
+  wrap; or 10-120): how many characters fit on one line of the objective text.
+  With wrapping off (0), the longest objectives run past the menu box.
+- `[General] Language` in `ChallengeCheat.ini` (`auto` follows the game's
+  UI language; or `en-US`, `fr-FR`, `de-DE`, `it-IT`, `es-ES`, `pt-BR`,
+  `pl-PL`, `ru-RU`, `ko-KR`, `zh-TW`, `ja-JP`, `es-MX`, `zh-CN`). Needs a
+  game restart; non-Latin overrides only render correctly when the game
+  itself is set to that language.
+
 ## [1.0.0] - 2026-09-18
 
 First release.

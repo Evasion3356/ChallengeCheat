@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
 // ChallengeCheat -- ScriptHookRDR2 ASI mod that advances/completes RDR2's
 // singleplayer "Challenges" (Bandit, Explorer, Gambler, Herbalist, Horseman,
@@ -29,7 +30,8 @@ namespace ChallengeCheat
 		Count
 	};
 
-	const char* GetDisplayName(Category category);
+	// Localized (see Localization.h); valid for the life of the process.
+	std::string_view GetDisplayName(Category category);
 
 	struct RankInfo
 	{

@@ -144,13 +144,15 @@
 
 #include "ChallengeCheat.h"
 #include "Log.h"
+#include "Localization.h"
 #include "script.h"
 #include "TimedRideHook.h"
 
 #include "..\external\RDR-Classes\rage\joaat.hpp"
 
 #include <cstddef>
-#include <cstring>
+#include <cstdint>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -172,8 +174,8 @@ namespace
 
 	struct CategoryInfo
 	{
-		const char* displayName;
-		const char* rootHashName;
+		std::string_view displayName;
+		std::string_view rootHashName;
 	};
 
 	// Order matches Category's enum order, which matches pause_menu.ysc.c's
@@ -249,9 +251,9 @@ namespace
 		Category category;
 		int rank; // 1-indexed: this write contributes to reaching this rank
 		WriteKind kind;
-		const char* label;  // goal name -- always the goal's real <name>, for logging
-		const char* baseId; // Stat: statId BaseId ("" if this stat has none). Collectable: the collectable item's real name.
-		const char* permId; // Stat only: statId PermutationId ("" if none)
+		std::string_view label;  // goal name -- always the goal's real <name>, for logging
+		std::string_view baseId; // Stat: statId BaseId ("" if this stat has none). Collectable: the collectable item's real name.
+		std::string_view permId; // Stat only: statId PermutationId ("" if none)
 		float value;
 		bool isFloat; // Stat: increment as float vs int. ScriptGoal: always false (int goals only so far)
 		Requirement requirement = Requirement::None;
@@ -267,7 +269,7 @@ namespace
 		StatId& id,
 		const CategoryInfo& categoryInfo,
 		int targetRank,
-		const char* verb,
+		std::string_view verb,
 		float amount)
 	{
 		if (write.isFloat)
@@ -291,7 +293,7 @@ namespace
 	// WriteKind::StatDistinct Step bookkeeping: how many of a goal's rows
 	// Advance has credited so far this session, keyed by goal name. Not
 	// persisted -- after a restart mid-rank, Complete finishes the rank.
-	std::unordered_map<std::string, int> g_distinctStepsCredited;
+	std::unordered_map<std::uint32_t, int> g_distinctStepsCredited; // key: rage::Joaat(goal name)
 
 	// Auto-generated from the REAL challenges_sp.meta + goals_sp.meta
 	// (extracted from update_1.rpf, NOT the fake mod copy -- see this
@@ -728,7 +730,7 @@ namespace
 	// requested breed's model a few meters from the player, calls the
 	// native on it once, then deletes it immediately -- the player never
 	// sees it appear.
-	bool SpawnAndBreakCompendiumHorse(Hash modelHash, const char* label)
+	bool SpawnAndBreakCompendiumHorse(Hash modelHash, std::string_view label)
 	{
 		if (!STREAMING::IS_MODEL_IN_CDIMAGE(modelHash) || !STREAMING::IS_MODEL_VALID(modelHash))
 		{
@@ -788,9 +790,9 @@ namespace
 
 namespace ChallengeCheat
 {
-	const char* GetDisplayName(Category category)
+	std::string_view GetDisplayName(Category category)
 	{
-		return Info(category).displayName;
+		return Localization::CategoryName(static_cast<int>(category));
 	}
 
 	const std::string& GetLastAdvanceFailureReason()
@@ -834,7 +836,7 @@ namespace ChallengeCheat
 	bool ApplyRankProgress(Category category, WriteMode mode)
 	{
 		g_lastFailureReason.clear();
-		const char* verb = (mode == WriteMode::Step) ? "AdvanceRank" : "CompleteChallenge";
+		const std::string_view verb = (mode == WriteMode::Step) ? "AdvanceRank" : "CompleteChallenge";
 
 		Hash chalHash = RootHash(category);
 		int before = STATS::CHAL_GET_NUM_RANKS_COMPLETED(chalHash);
@@ -842,8 +844,8 @@ namespace ChallengeCheat
 
 		if (before >= maxRanks)
 		{
-			g_lastFailureReason = std::string(Info(category).displayName) + " is already fully completed ("
-				+ std::to_string(before) + "/" + std::to_string(maxRanks) + ").";
+			g_lastFailureReason.assign(Localization::Text(Localization::Msg::AlreadyCompleted))
+				.append(" (").append(std::to_string(before)).append("/").append(std::to_string(maxRanks)).append(").");
 			Log::Write("{}({}): already at max rank ({}/{})", verb, Info(category).displayName, before, maxRanks);
 			return false;
 		}
@@ -864,7 +866,7 @@ namespace ChallengeCheat
 			const auto& write = *w;
 			if (write.requirement == Requirement::OnMount && !PED::IS_PED_ON_MOUNT(PLAYER::PLAYER_PED_ID()))
 			{
-				g_lastFailureReason = "You must be on horseback for this one -- mount up and try again.";
+				g_lastFailureReason = Localization::Text(Localization::Msg::NeedHorseback);
 				Log::Write("{}({}): rank {}'s goal '{}' requires being on horseback -- "
 					"mount up and try again. No change made.",
 					verb, Info(category).displayName, targetRank, write.label);
@@ -872,7 +874,7 @@ namespace ChallengeCheat
 			}
 			if (write.requirement == Requirement::OnMovingTrain && !PLAYER::IS_PLAYER_RIDING_TRAIN(PLAYER::PLAYER_ID()))
 			{
-				g_lastFailureReason = "You must be riding a train for this one -- hop aboard and try again.";
+				g_lastFailureReason = Localization::Text(Localization::Msg::NeedTrain);
 				Log::Write("{}({}): rank {}'s goal '{}' requires riding a train -- "
 					"hop aboard and try again. No change made.",
 					verb, Info(category).displayName, targetRank, write.label);
@@ -880,7 +882,7 @@ namespace ChallengeCheat
 			}
 			if (write.requirement == Requirement::ScopedKit && !SCRIPT::_IS_GOAL_CONTEXT_ACTIVE(static_cast<Hash>(rage::Joaat("CHAL_CTX_SCOPED_KIT"))))
 			{
-				g_lastFailureReason = "Raise your binoculars (or scope) for this one and try again.";
+				g_lastFailureReason = Localization::Text(Localization::Msg::NeedBinoculars);
 				Log::Write("{}({}): rank {}'s goal '{}' requires the scoped-kit context (binoculars/scope up) -- "
 					"not active. No change made.",
 					verb, Info(category).displayName, targetRank, write.label);
@@ -894,7 +896,7 @@ namespace ChallengeCheat
 				const Player player = PLAYER::PLAYER_ID();
 				if (!PLAYER::IS_PLAYER_FREE_AIMING(player) && !CAMERA::IS_AIM_CAM_ACTIVE())
 				{
-					g_lastFailureReason = "You must be aiming a weapon with Dead Eye active for this one -- aim, activate Dead Eye, and try again.";
+					g_lastFailureReason = Localization::Text(Localization::Msg::NeedDeadEyeAiming);
 					Log::Write("{}({}): rank {}'s goal '{}' requires aiming with Dead Eye active -- "
 						"not aiming. No change made.",
 						verb, Info(category).displayName, targetRank, write.label);
@@ -902,7 +904,7 @@ namespace ChallengeCheat
 				}
 				if (!PLAYER::_IS_SPECIAL_ABILITY_ACTIVE(player))
 				{
-					g_lastFailureReason = "Dead Eye must be active for this one -- activate it and try again.";
+					g_lastFailureReason = Localization::Text(Localization::Msg::NeedDeadEye);
 					Log::Write("{}({}): rank {}'s goal '{}' requires Dead Eye to be active -- "
 						"activate it and try again. No change made.",
 						verb, Info(category).displayName, targetRank, write.label);
@@ -934,7 +936,7 @@ namespace ChallengeCheat
 		// logged before every write so a "did nothing" report can be told apart
 		// from "goal wasn't even active" without another build.
 		{
-			std::unordered_set<std::string> seenLabels;
+			std::unordered_set<std::string_view> seenLabels; // views of static table literals
 			for (const auto* w : rankWrites)
 			{
 				const auto& write = *w;
@@ -977,10 +979,10 @@ namespace ChallengeCheat
 		int appliedCount = 0;
 		bool sawDistinctStep = false;
 		bool distinctStepDone = false;
-		const char* distinctRowLabel = nullptr;
+		std::string_view distinctRowLabel;
 		int distinctRowIndex = 0;
 		int compendiumRowIndex = 0;
-		std::unordered_set<std::string> steppedSumGoals;
+		std::unordered_set<std::string_view> steppedSumGoals;
 		for (const auto* w : rankWrites)
 		{
 			const auto& write = *w;
@@ -1009,16 +1011,16 @@ namespace ChallengeCheat
 					// incremented here, and skipping already-nonzero stats
 					// left the goal one short (14 of 15).
 					sawDistinctStep = true;
-					if (distinctRowLabel == nullptr || std::strcmp(distinctRowLabel, write.label) != 0)
+					if (distinctRowLabel != write.label)
 					{
 						distinctRowLabel = write.label;
 						distinctRowIndex = 0;
 					}
 					const int rowIndex = distinctRowIndex++;
-					if (distinctStepDone || rowIndex != g_distinctStepsCredited[write.label])
+					if (distinctStepDone || rowIndex != g_distinctStepsCredited[rage::Joaat(write.label)])
 						continue;
 					distinctStepDone = true;
-					++g_distinctStepsCredited[write.label];
+					++g_distinctStepsCredited[rage::Joaat(write.label)];
 				}
 				if (write.kind == WriteKind::StatSum && mode == WriteMode::Step)
 				{
@@ -1091,7 +1093,8 @@ namespace ChallengeCheat
 					}
 					else
 					{
-						const std::string counterKey = std::string("compendium:") + Info(category).displayName + ":" + std::to_string(targetRank);
+						const std::uint32_t counterKey = rage::Joaat(
+							std::string("compendium:").append(Info(category).displayName).append(":").append(std::to_string(targetRank)));
 						if (rowIndex != g_distinctStepsCredited[counterKey])
 							continue;
 						++g_distinctStepsCredited[counterKey];
@@ -1125,7 +1128,7 @@ namespace ChallengeCheat
 		{
 			// Nothing left for Advance to credit. Say so on screen rather than
 			// silently doing nothing.
-			g_lastFailureReason = "Every item for this rank has already been credited -- if the rank isn't complete, use Complete.";
+			g_lastFailureReason = Localization::Text(Localization::Msg::AllItemsCredited);
 			Log::Write("{}({}): every item for rank {} is already credited -- nothing to add.",
 				verb, Info(category).displayName, targetRank);
 			return false;
@@ -1133,7 +1136,7 @@ namespace ChallengeCheat
 
 		if (appliedCount == 0)
 		{
-			g_lastFailureReason = "No known way to progress this goal yet -- see CLAUDE.md.";
+			g_lastFailureReason = Localization::Text(Localization::Msg::NoKnownWrite);
 			Log::Write("{}({}): no known write for rank {} yet -- unsupported goal type "
 				"(group-stat, see CLAUDE.md). No change made.",
 				verb, Info(category).displayName, targetRank);

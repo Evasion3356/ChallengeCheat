@@ -38,6 +38,7 @@
 */
 
 #include "scriptmenu.h"
+#include <climits>
 
 // Wraps `str` in the Scaleform rich-text tags UIDEBUG::_BG_DISPLAY_TEXT
 // needs to actually render it -- see this file's own header comment.
@@ -110,6 +111,146 @@ void MenuItemBase::OnDraw(float lineTop, float lineLeft, bool active)
 	ColorRgba textColor = active ? m_colorTextActive : m_colorText;
 	int fontSize = static_cast<int>(m_lineHeight * kMenuFontSizeScale);
 	DrawTextAt(lineLeft + m_textLeft, lineTop + m_lineHeight / 4.5f, GetCaption().c_str(), fontSize, textColor);
+}
+
+namespace
+{
+	// MenuItemParagraph layout. The wrap width is an ESTIMATE in "units" (a
+	// Latin/Cyrillic character = 1, a CJK/Hangul/kana one = 2) since the
+	// Scaleform text has no measuring call here -- the width is
+	// ChallengeCheat.ini [General] WrapWidth (Config.h), tunable in-game.
+	constexpr int kParagraphFontSize = 21;
+	constexpr float kParagraphLineStep = 0.034f;
+	constexpr float kParagraphPadding = 0.016f;
+
+	// Decodes the UTF-8 code point at s[i]; returns its byte length (>= 1,
+	// so malformed input still makes progress).
+	size_t DecodeUtf8(const std::string& s, size_t i, char32_t& cp)
+	{
+		const unsigned char c = static_cast<unsigned char>(s[i]);
+		size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 1;
+		if (i + len > s.size())
+			len = 1;
+		cp = len == 1 ? c : c & (0xFF >> (len + 1));
+		for (size_t k = 1; k < len; k++)
+			cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+		return len;
+	}
+
+	bool IsWide(char32_t cp)
+	{
+		return (cp >= 0x1100 && cp <= 0x11FF) || (cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7AF)
+			|| (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE4F) || (cp >= 0xFF00 && cp <= 0xFF60)
+			|| (cp >= 0xFFE0 && cp <= 0xFFE6);
+	}
+
+	// Closing punctuation never starts a line (it may overhang instead).
+	bool IsClosingPunctuation(char32_t cp)
+	{
+		switch (cp)
+		{
+		case 0x3001: case 0x3002: case 0xFF0C: case 0xFF0E: case 0xFF01: case 0xFF1F: case 0xFF1A: case 0xFF1B:
+		case 0xFF09: case 0x300D: case 0x300F: case 0x3011: case 0x300B: case 0x201D: case 0x2019:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	// Greedy wrap: break at spaces, or after any wide (CJK) character.
+	std::vector<std::string> WrapText(const std::string& text, int maxUnits)
+	{
+		if (maxUnits <= 0)
+			maxUnits = INT_MAX; // 0 = never wrap (explicit newlines still break)
+
+		std::vector<std::string> lines;
+		size_t lineStart = 0, i = 0;
+		int units = 0;
+		size_t breakEnd = std::string::npos, breakNext = std::string::npos; // last break opportunity on this line
+
+		while (i < text.size())
+		{
+			char32_t cp;
+			const size_t n = DecodeUtf8(text, i, cp);
+
+			if (cp == 0x0A) // newline
+			{
+				lines.push_back(text.substr(lineStart, i - lineStart));
+				lineStart = i = i + n;
+				units = 0;
+				breakEnd = breakNext = std::string::npos;
+				continue;
+			}
+			if (cp == U' ' && units == 0)
+			{
+				lineStart = i = i + n; // no leading spaces
+				continue;
+			}
+
+			const bool wide = IsWide(cp);
+			const int width = IsClosingPunctuation(cp) ? 0 : (wide ? 2 : 1);
+			if (units > maxUnits - width && units > 0)
+			{
+				const size_t end = breakEnd != std::string::npos && breakEnd > lineStart ? breakEnd : i;
+				const size_t next = breakEnd != std::string::npos && breakEnd > lineStart ? breakNext : i;
+				lines.push_back(text.substr(lineStart, end - lineStart));
+				lineStart = i = next; // rescan the overflow from the new line start
+				units = 0;
+				breakEnd = breakNext = std::string::npos;
+				continue;
+			}
+
+			units += width;
+			if (cp == U' ')
+			{
+				breakEnd = i;
+				breakNext = i + n;
+			}
+			else if (wide)
+			{
+				breakEnd = breakNext = i + n;
+			}
+			i += n;
+		}
+
+		if (lineStart < text.size())
+			lines.push_back(text.substr(lineStart));
+		return lines;
+	}
+}
+
+void MenuItemParagraph::Refresh()
+{
+	const std::string_view text = m_textFn ? m_textFn() : std::string_view();
+	if (m_lines.empty() || text != m_lastText)
+	{
+		m_lastText.assign(text);
+		m_lines = WrapText(m_lastText, Config::Get().WrapWidth);
+		if (m_lines.empty())
+			m_lines.emplace_back();
+	}
+}
+
+float MenuItemParagraph::GetLineHeight()
+{
+	Refresh();
+	return static_cast<float>(m_lines.size()) * kParagraphLineStep + kParagraphPadding;
+}
+
+void MenuItemParagraph::OnDraw(float lineTop, float lineLeft, bool active)
+{
+	const float height = GetLineHeight();
+	const float width = GetLineWidth();
+	const ColorRgba rect = active ? GetColorRectActive() : GetColorRect();
+	DrawRect(lineLeft, lineTop, width, height, rect.r, rect.g, rect.b, rect.a);
+	if (active)
+		DrawRectBorder(lineLeft, lineTop, width, height, MenuBase_activeBorderThickness,
+			MenuBase_activeBorderColor.r, MenuBase_activeBorderColor.g, MenuBase_activeBorderColor.b, MenuBase_activeBorderColor.a);
+
+	const ColorRgba color = active ? GetColorTextActive() : GetColorText();
+	for (size_t line = 0; line < m_lines.size(); line++)
+		DrawTextAt(lineLeft + MenuItemDefault_textLeft, lineTop + kParagraphPadding / 2.0f + static_cast<float>(line) * kParagraphLineStep,
+			m_lines[line].c_str(), kParagraphFontSize, color);
 }
 
 void MenuItemSwitchable::OnDraw(float lineTop, float lineLeft, bool active)

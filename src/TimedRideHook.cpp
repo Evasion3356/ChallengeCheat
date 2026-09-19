@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <string_view>
 
 namespace
 {
@@ -14,14 +15,14 @@ namespace
 	// trampoline. Verified unique across the whole ~115MB image (single
 	// match, at the expected address) via a headless idat.exe + IDAPython
 	// scan, 2026-09-17 -- see TimedRideHook.h's header comment.
-	constexpr const char* kTimedRideChallengeCheckSignature =
+	constexpr std::string_view kTimedRideChallengeCheckSignature =
 		"48 89 5C 24 ? 48 89 6C 24 ? 56 41 54 41 56 48 81 EC";
 
 	// sub_140B9842C's own prologue, extended far enough into the function
 	// body (through its `mov rdi, rcx` / vtable-call setup) to be unique
 	// on its own -- an earlier, shorter attempt at this signature matched
 	// 3 different functions in the image. Also verified unique, 2026-09-17.
-	constexpr const char* kUnlockChallengeSignature =
+	constexpr std::string_view kUnlockChallengeSignature =
 		"48 89 5C 24 ? 48 89 7C 24 ? 55 48 8D 6C 24 ? 48 81 EC ? ? ? ? ? ? ? 48 8B F9 FF 90";
 }
 
@@ -131,7 +132,7 @@ namespace TimedRideHook
 		// Script-thread only. Disables the hook and clears the target but
 		// keeps it created, so the next Arm() is just an enable -- never
 		// call from the detour.
-		void Disarm(Runtime& runtime, const char* reason)
+		void Disarm(Runtime& runtime, std::string_view reason)
 		{
 			runtime.targetTimedRideGoalIndex.store(0, std::memory_order_release);
 
@@ -151,7 +152,7 @@ namespace TimedRideHook
 		}
 
 		// Script-thread only. Full removal + MinHook uninitialize.
-		void Teardown(Runtime& runtime, const char* reason)
+		void Teardown(Runtime& runtime, std::string_view reason)
 		{
 			Disarm(runtime, reason);
 

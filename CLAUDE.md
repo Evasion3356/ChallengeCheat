@@ -429,7 +429,45 @@ Still open: whether the real reward (item/recipe/cosmetic) is actually
 granted alongside a cheat-driven rank completion, not just the rank
 counter and pause-menu display -- not yet independently confirmed.
 
+## Localization (game-sourced text)
+
+Game-owned text (category names, the Dead Eye term) is the game's EXACT
+per-language wording, not a translation. Every label in
+`challenges_sp.meta`/`goals_sp.meta` (`challengeNameLabel`,
+`rankDescLabel`, goal `*DescriptionLabel`, ... ~365 unique) is a GXT key
+whose text lives in `global.yldb` inside each language's
+`x64/data/lang/<lang>_rel.rpf` in `update_3.rpf` (checked first; `data_0.rpf`
+has the base copies). `RDR2RPFTool --extract` the nested RPF, then the
+`global.yldb` from it, into `D:\Backup\Stuff\RDR2 Shit\GXT\global_<lang>.yldb`.
+`tools/dump_labels.py` parses those (a RAGE RSC8 memory dump: virtual base
+0x50000000; each label is a node `{u32 joaat(label), pad, u64 cell}`; the
+string record `{ptr,len}` is at `cell+0x20`, chars at `ptr+16`, len includes
+the NUL) and writes `GXT\labels.json` -- all 365 labels x 13 languages
+resolve with zero misses/ambiguities. **Pitfall:** an earlier version guessed
+the record by "pair at node-0x10, else node-0x30" -- it worked for ~80% of
+entries but silently returned a NEIGHBOR's string for the rest (e.g. French
+rank 2 objective came back "Passager"). Always resolve via the cell pointer.
+Cross-check: numbers in each `*_obj` text match English's (only spelled-out
+numbers and Japanese "1日" differ). `tools/gen_localization.py`
+emits `src/LocalizationData.h` (do not hand-edit). The menu uses
+the category names, Dead Eye, and each category's next-rank objective
+(`rankDescLabel`, shown by `MenuItemParagraph`, which word-wraps and grows its
+row height; wrap width is the `[General] WrapWidth` INI setting (default 50; 0 = no wrapping; otherwise units per line), an ESTIMATE --
+tune in-game). Goal descriptions (`*DescriptionLabel`, with `~1~` tokens) are
+in `labels.json` but unused. NBSPs are converted to spaces. The Dead Eye label
+name is unknown -- matched by text ("Dead Eye" hash 0x6788AE48 gives the real
+term in all languages). Mod-own verbs/messages live in `Localization.cpp`
+(LLM-assisted, unreviewed). Not yet verified in-game per language.
+
 ## Coding conventions
+
+Strings: prefer `std::string_view` for read-only text (params, static tables,
+`Localization::Text/CategoryName/RankObjective` returns). Per-frame code must
+not allocate: `Localization::Text` is cached per `Refresh()`, and
+`MenuItemParagraph` takes a `string_view` callback and copies only on change.
+`g_distinctStepsCredited` is keyed by `rage::Joaat(goal name)`, not a string.
+Tables holding views of literals (`kKnownWrites`) are safe as `string_view`
+keys/set members.
 
 Same as PokerCheat/BlackjackCheat/DominoCheat's own: no C-style casts, no
 C-style strings/buffers. Logging goes through `Log::Write` (spdlog,
