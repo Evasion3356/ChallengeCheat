@@ -5,6 +5,8 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-19
+
 ### Added
 - Localization into all 13 languages RDR2 ships with. Category names and
   the Dead Eye term are the game's own per-language wording (extracted
@@ -22,6 +24,10 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `pl-PL`, `ru-RU`, `ko-KR`, `zh-TW`, `ja-JP`, `es-MX`, `zh-CN`). Needs a
   game restart; non-Latin overrides only render correctly when the game
   itself is set to that language.
+
+### Changed
+- Faster rank/goal lookups behind the menu (fewer repeated table scans
+  per frame and per click). No behavior change.
 
 ## [1.0.0] - 2026-09-18
 
