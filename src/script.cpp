@@ -125,13 +125,22 @@ void ScriptMain()
 	Log::Write("ChallengeCheat started");
 
 	BuildMenu();
+	ChallengeCheat::SetWaitDrawCallback([] { g_menuController.OnDraw(); });
 
 	// Pay the AOB-scan + MinHook setup cost now, not on the first
 	// Horseman 3/6/9 click.
 	TimedRideHook::Initialize();
 
+	bool wasLoading = false;
 	while (true)
 	{
+		// A loading screen means a save load or new game: the Advance step
+		// counters describe the save that was loaded before it.
+		const bool loading = DLC::GET_IS_LOADING_SCREEN_ACTIVE() != FALSE;
+		if (loading && !wasLoading)
+			ChallengeCheat::ResetSessionState();
+		wasLoading = loading;
+
 		if (!g_menuController.HasActiveMenu() && MenuInput::MenuSwitchPressed())
 			g_menuController.PushMenu(g_mainMenu);
 

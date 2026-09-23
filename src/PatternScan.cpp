@@ -49,7 +49,7 @@ namespace
 
 namespace PatternScan
 {
-	std::optional<std::uintptr_t> FindInMainModule(std::string_view pattern)
+	std::optional<std::uintptr_t> FindInMainModule(std::string_view pattern, std::uintptr_t startAddress)
 	{
 		auto base = reinterpret_cast<std::uint8_t*>(GetModuleHandle(nullptr));
 		if (!base)
@@ -101,6 +101,17 @@ namespace PatternScan
 		// candidateStart would point before base, reading out of bounds.
 		std::uint8_t* searchStart = base + firstConcrete;
 		std::size_t remaining = imageSize - firstConcrete;
+
+		// Honor startAddress by starting the anchor search that much later.
+		const std::uintptr_t imageBase = reinterpret_cast<std::uintptr_t>(base);
+		if (startAddress > imageBase)
+		{
+			const std::size_t skip = static_cast<std::size_t>(startAddress - imageBase);
+			if (skip >= remaining)
+				return std::nullopt;
+			searchStart += skip;
+			remaining -= skip;
+		}
 
 		for (;;)
 		{

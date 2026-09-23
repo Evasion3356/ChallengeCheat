@@ -62,10 +62,13 @@ namespace TimedRideHook
 		char __fastcall TimedRideChallengeCheckDetour(ChallengeState* challengeState, TimedRideGoalIndex timedRideGoalIndex)
 		{
 			Runtime& runtime = GetRuntime();
-			TimedRideGoalIndex targetGoalIndex = runtime.targetTimedRideGoalIndex.load(std::memory_order_acquire);
-			if (targetGoalIndex != 0 && timedRideGoalIndex == targetGoalIndex && runtime.unlockChallenge)
+			// compare_exchange rather than load-then-store: the engine can
+			// evaluate goals on more than one thread, and only ONE call may
+			// claim the target and force the unlock.
+			TimedRideGoalIndex expected = timedRideGoalIndex;
+			if (timedRideGoalIndex != 0 && runtime.unlockChallenge &&
+				runtime.targetTimedRideGoalIndex.compare_exchange_strong(expected, 0, std::memory_order_acq_rel))
 			{
-				runtime.targetTimedRideGoalIndex.store(0, std::memory_order_release);
 				std::uint64_t result = runtime.unlockChallenge(challengeState);
 				runtime.matched.store(true, std::memory_order_release);
 				Log::Write("TimedRideHook: matched timed-ride goal index {:#x} (challengeState={:#x}) -- "
@@ -101,6 +104,18 @@ namespace TimedRideHook
 			if (!unlockAddr)
 			{
 				Log::Write("TimedRideHook: unlock-challenge signature not found (game build may have changed) -- not installed.");
+				return false;
+			}
+
+			// Both signatures were verified unique in build 1491.50, but the
+			// check-function one is a generic prologue. On any other build a
+			// second match means we can't tell which function is the real
+			// one, and hooking the wrong one would call the unlock function on
+			// an unrelated object -- refuse instead.
+			if (PatternScan::FindInMainModule(kTimedRideChallengeCheckSignature, *checkAddr + 1) ||
+				PatternScan::FindInMainModule(kUnlockChallengeSignature, *unlockAddr + 1))
+			{
+				Log::Write("TimedRideHook: a signature matched more than once (game build may have changed) -- not installed.");
 				return false;
 			}
 

@@ -22,7 +22,9 @@ namespace PatternScan
 {
 	// Scans the main module's (RDR2.exe's) full mapped image for the given
 	// pattern. Returns the address of the first match, or nullopt.
-	std::optional<std::uintptr_t> FindInMainModule(std::string_view pattern);
+	// startAddress (optional) skips every match that begins before it --
+	// pass a previous match + 1 to look for a second one.
+	std::optional<std::uintptr_t> FindInMainModule(std::string_view pattern, std::uintptr_t startAddress = 0);
 
 	// Resolves a 4-byte RIP-relative operand at (matchAddress + operandOffset)
 	// to the absolute address it targets -- i.e. matchAddress + operandOffset

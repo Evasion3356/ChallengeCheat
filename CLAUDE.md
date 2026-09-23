@@ -317,7 +317,8 @@ RDX in the `value` field (353/356/359 decimal = 0x161/0x164/0x167).
 `TimedRideHook::Uninstall()` is called from `main.cpp`'s `DllMain` on
 `DLL_PROCESS_DETACH` -- fully disables/removes the hook and calls
 `MH_Uninitialize()`, since MinHook is a process-wide library that
-shouldn't outlive this ASI's own load.
+shouldn't outlive this ASI's own load. Skipped on process exit (non-null
+`lpReserved`), when every other thread is already gone.
 
 **CONFIRMED LIVE (2026-09-17 night, pre-refactor): the selective
 `TimedRideHook` works through the mod's own `AdvanceRank()`.** Horseman
@@ -497,7 +498,22 @@ reading is needed -- everything goes through stock `STATS::` natives).
 DominoCheat (F12), and this mod (F9) can all be loaded into the game at
 once with no key collision.
 
-Runtime log: `<game folder>\ChallengeCheat.log`.
+Runtime log: `<game folder>\ChallengeCheat.log` -- or
+`%LOCALAPPDATA%\RDR2ASIMods\ChallengeCheat.log` when the game folder isn't
+writable (e.g. a C:\Program Files install; the file's first line then names
+the rejected path). See `src/LogFallback.h`, vendored identically into every
+sibling project.
+
+`tests/LogFallbackTests.vcxproj` checks that logging falls back to
+`%LOCALAPPDATA%\RDR2ASIMods\` instead of throwing when the game folder can't
+be written (it points the logger at `C:\Windows\System32` -- skipped when run
+elevated -- and at a path through a regular file). Same test, vendored into
+every sibling project:
+
+```
+"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" tests\LogFallbackTests.vcxproj /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal
+bin\Debug\LogFallbackTests.exe
+```
 
 ## Source layout
 

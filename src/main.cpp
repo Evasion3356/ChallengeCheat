@@ -28,7 +28,12 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 		// hook and uninitialize it here rather than leaving it installed
 		// past this ASI's own lifetime (e.g. if the mod loader unloads
 		// this DLL without the process exiting).
-		TimedRideHook::Uninstall();
+		// Skipped when the process is exiting (non-null lpReserved): every
+		// other thread is already gone and the hook dies with the process,
+		// so MinHook's thread suspension/patching under the loader lock
+		// would only add risk.
+		if (!lpReserved)
+			TimedRideHook::Uninstall();
 		break;
 	}
 	return TRUE;

@@ -90,4 +90,16 @@ namespace ChallengeCheat
 	// 0 only when nothing could be attempted at all -- check
 	// GetLastAdvanceFailureReason() in that case.
 	int CompleteChallenge(Category category);
+
+	// Called every frame while an Advance/Complete action waits on the game
+	// (horse model streaming, a newly unlocked category activating), so the
+	// menu keeps drawing through the wait instead of vanishing. script.cpp
+	// passes the menu controller's draw.
+	void SetWaitDrawCallback(void (*callback)());
+
+	// Forgets this session's Advance bookkeeping (which distinct herbs/
+	// animals/horse breeds a step already credited). Those counters describe
+	// the save that was loaded when they were taken, so script.cpp calls this
+	// whenever a loading screen appears (loading another save, new game).
+	void ResetSessionState();
 }
