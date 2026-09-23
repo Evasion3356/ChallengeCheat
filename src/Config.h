@@ -5,7 +5,9 @@
 	tuning surface (the F9 menu is Release-visible for the same reason --
 	see ChallengeCheat's CLAUDE.md).
 
-	ChallengeCheat.ini lives next to the .asi. Missing/invalid values fall
+	ChallengeCheat.ini lives next to the .asi, or in
+	%LOCALAPPDATA%\RDR2ASIMods\ when the game folder isn't writable (see
+	LogFallback::ResolveSettings). Missing/invalid values fall
 	back to defaults and the file is rewritten with the resolved values, so
 	it always reflects what the mod is actually using.
 

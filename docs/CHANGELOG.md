@@ -28,6 +28,10 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/).
   or a read-only/locked log file), the log now goes to
   `%LOCALAPPDATA%\RDR2ASIMods\ChallengeCheat.log` instead, and its first line
   names the path that couldn't be used.
+- Settings work in a game folder that can't be written, too:
+  `ChallengeCheat.ini` is then saved to `%LOCALAPPDATA%\RDR2ASIMods\ChallengeCheat.ini`
+  (starting from the game folder's copy, if there is one) instead of the
+  mod being stuck on default settings.
 
 ## [1.1.0] - 2026-09-19
 

@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "KeyNames.h"
 #include "Log.h"
+#include "LogFallback.h"
 
 #include "..\external\inipp\inipp\inipp.h"
 
@@ -18,33 +19,22 @@ namespace
 	Config::Values g_values;
 	bool g_loaded = false;
 
-	const std::wstring& ResolveIniPath()
+	// Where ChallengeCheat.ini is loaded from and saved to: next to the .asi, or
+	// %LOCALAPPDATA%\RDR2ASIMods\ChallengeCheat.ini when the game folder isn't
+	// writable -- starting from the game folder's copy if there is one (see
+	// LogFallback::ResolveSettings). Resolved once per session.
+	const LogFallback::SettingsPaths& IniPaths()
 	{
-		static const std::wstring path = []() -> std::wstring
-		{
-			HMODULE hModule = nullptr;
-			GetModuleHandleExA(
-				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-				reinterpret_cast<LPCSTR>(&ResolveIniPath),
-				&hModule);
-
-			wchar_t modulePath[MAX_PATH] = {};
-			GetModuleFileNameW(hModule, modulePath, MAX_PATH);
-
-			wchar_t drive[_MAX_DRIVE], dir[_MAX_DIR];
-			_wsplitpath_s(modulePath, drive, _MAX_DRIVE, dir, _MAX_DIR, nullptr, 0, nullptr, 0);
-
-			return std::wstring(drive) + dir + L"ChallengeCheat.ini";
-		}();
-
-		return path;
+		static const LogFallback::SettingsPaths paths = LogFallback::ResolveSettings(
+			LogFallback::ModuleDirectory(), L"ChallengeCheat.ini", LogFallback::FallbackDirectory());
+		return paths;
 	}
 
 	void ReloadImpl()
 	{
 		inipp::Ini<char> ini;
 		{
-			std::ifstream is(ResolveIniPath());
+			std::ifstream is(IniPaths().read);
 			if (is)
 				ini.parse(is);
 		}
@@ -94,8 +84,12 @@ namespace
 		}
 		general["WrapWidth"] = std::to_string(g_values.WrapWidth);
 
+		if (IniPaths().usedFallback)
+			Log::Write("Config::Reload -- the game folder isn't writable, so settings are saved to {}",
+				LogFallback::ToUtf8(IniPaths().write));
+
 		{
-			std::ofstream os(ResolveIniPath(), std::ios::trunc);
+			std::ofstream os(IniPaths().write, std::ios::trunc);
 			if (os)
 				ini.generate(os);
 			else
