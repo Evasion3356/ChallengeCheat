@@ -684,3 +684,15 @@ Everything in ranks 1-10 is live-tested as of 1.0. Remaining:
 3. Consider `StatAtOnce` for other short-window reset goals if Advance
    feels wrong (Weapons Expert 2 has a 10 s window; Horseman 2 a 15 s
    one and was fine live).
+
+## Releasing
+
+Add a `## [X.Y.Z] - date` entry to `docs/CHANGELOG.md`, commit it, then push an
+`X.Y` tag (`git tag -a X.Y -m "X.Y.Z - summary"`, `git push origin
+master X.Y`). `.github/workflows/release.yml` then runs every unit test
+project under `tests/`, builds the Release `.asi` on a GitHub Windows runner
+(deploy step off), and publishes a GitHub release named "ChallengeCheat X.Y.Z" with
+that changelog entry as its notes and the `.asi` attached. To release an
+existing tag again, use "Run workflow" on the Actions tab and enter the tag.
+The projects target toolset v145 (VS 2026); if the runner only has an older
+Visual Studio, the workflow builds with v143 instead.
