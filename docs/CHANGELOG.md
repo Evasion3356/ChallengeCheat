@@ -5,6 +5,30 @@ loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-23
+
+### Changed
+- Advance on record- and amount-type goals now applies the full value in
+  one click instead of adding 1 per click, which would have taken
+  thousands of clicks: Bandit 5 (highest bounty), Bandit 7 (hold-up cash),
+  Horseman 4 (lasso drag distance), Sharpshooter 4 and 6 (furthest kill).
+- The menu stays on screen while an action waits on the game, e.g.
+  Complete on Horseman 10 while the horse models load.
+
+### Fixed
+- Advance's per-item progress (distinct herbs, animals, horse breeds) now
+  resets when you load a save or start a new game, instead of claiming
+  items were already credited in a different save.
+- The Horseman timed-ride unlock (ranks 3/6/9) can no longer fire twice
+  for one click, and on a game build whose code doesn't match exactly it
+  now refuses to install rather than guess.
+- Closing the game no longer tears down the timed-ride hook while the
+  game is already shutting down.
+- If the game folder can't be written (e.g. a `C:\Program Files` install,
+  or a read-only/locked log file), the log now goes to
+  `%LOCALAPPDATA%\RDR2ASIMods\ChallengeCheat.log` instead, and its first line
+  names the path that couldn't be used.
+
 ## [1.1.0] - 2026-09-19
 
 ### Added
