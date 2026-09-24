@@ -483,7 +483,7 @@ fmt-style `{}` placeholders, compile-time checked).
 `PostBuildEvent` auto-locates the RDR2 install directory
 (`BuildTools\Find-RDR2GameDir.ps1`) and copies the built `.asi` straight
 in, every build regardless of whether the build itself was up to date.
-`DisableFastUpToDateCheck` is set in `.vcxproj.user` so this also holds
+`DisableFastUpToDateCheck` is set in the tracked `.vcxproj` so this also holds
 for Visual Studio IDE builds. **RDR2.exe must be closed first** or the
 copy fails with a file-in-use error.
 
