@@ -2,7 +2,7 @@
 #include "LocalizationData.h"
 #include "Config.h"
 #include "Log.h"
-#include "script.h" // LANGUAGE::_GET_CURRENT_LANGUAGE_ID()
+#include "script.h" // LOCALIZATION::GET_CURRENT_LANGUAGE()
 
 #include <array>
 
@@ -193,7 +193,7 @@ namespace Localization
 		else
 		{
 			// "auto" and any typo'd override both defer to the game's language.
-			const std::int32_t raw = LANGUAGE::_GET_CURRENT_LANGUAGE_ID();
+			const std::int32_t raw = LOCALIZATION::GET_CURRENT_LANGUAGE();
 			g_current = (raw < 0 || raw >= kLanguageCount) ? Language::English : static_cast<Language>(raw);
 		}
 

@@ -17,7 +17,7 @@
 	  concept (Dead Eye, binoculars, train) it uses the game's own word.
 
 	Language is auto-detected from the game's UI language via
-	LANGUAGE::_GET_CURRENT_LANGUAGE_ID(); ChallengeCheat.ini's [General]
+	LOCALIZATION::GET_CURRENT_LANGUAGE(); ChallengeCheat.ini's [General]
 	Language key overrides it ("auto" or a code like "de-DE"). The game only
 	loads the real font/glyph assets for its own configured language, so
 	non-Latin overrides only render correctly with the game set to match.
@@ -31,7 +31,7 @@
 
 namespace Localization
 {
-	// Matches LANGUAGE::_GET_CURRENT_LANGUAGE_ID()'s return value (same
+	// Matches LOCALIZATION::GET_CURRENT_LANGUAGE()'s return value (same
 	// mapping as PokerCheat's Localization.h).
 	enum class Language : std::int32_t
 	{
