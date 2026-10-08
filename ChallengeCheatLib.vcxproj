@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The challenge writes, the timed-ride hook and their localized text as a
+  static library, with no DllMain, menu, INI or log file of its own (see
+  src/ChallengeCheatLog.h; the language comes from the host through
+  Localization::SetLanguageOverride/SetLanguage). Linked by
+  ChallengeCheat.vcxproj (the standalone ASI) and by Rampagio, which pulls
+  this repo in as a submodule.
+
+  Public headers: src/ChallengeCheat.h, src/TimedRideHook.h,
+  src/Localization.h, src/ChallengeCheatLog.h. Calls natives (the
+  external/ScriptHookSDK headers; the host links ScriptHookRDR2.lib) and
+  includes MinHook.h without building MinHook: the host links its own copy
+  and owns MH_Uninitialize. Script thread only.
+-->
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\ChallengeCheat.cpp" />
+    <ClCompile Include="src\ChallengeCheatLog.cpp" />
+    <ClCompile Include="src\Localization.cpp" />
+    <ClCompile Include="src\PatternScan.cpp" />
+    <ClCompile Include="src\TimedRideHook.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\ChallengeCheat.h" />
+    <ClInclude Include="src\ChallengeCheatLog.h" />
+    <ClInclude Include="src\Localization.h" />
+    <ClInclude Include="src\LocalizationData.h" />
+    <ClInclude Include="src\PatternScan.h" />
+    <ClInclude Include="src\TimedRideHook.h" />
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{6C4A2E91-8B3F-4D57-A1E6-0F9B7C3D5E28}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>ChallengeCheatLib</RootNamespace>
+    <ProjectName>ChallengeCheatLib</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <!-- Outputs stay inside this repo (bin/ and tmp/ are gitignored), also
+         when a parent project builds it through a ProjectReference. -->
+    <OutDir>$(MSBuildThisFileDirectory)bin\Lib\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)tmp\Lib\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)external\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>false</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)external\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

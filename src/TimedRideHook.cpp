@@ -1,6 +1,6 @@
 #include "TimedRideHook.h"
 #include "PatternScan.h"
-#include "Log.h"
+#include "ChallengeCheatLog.h"
 
 #include <MinHook.h>
 #include <windows.h>
@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <string_view>
 
+namespace ChallengeCheat
+{
 namespace
 {
 	// sub_140BAC640's own prologue -- the function's TRUE entry point (not
@@ -166,7 +168,7 @@ namespace TimedRideHook
 				Log::Write("TimedRideHook: disarmed ({}).", reason);
 		}
 
-		// Script-thread only. Full removal + MinHook uninitialize.
+		// Script-thread only. Disables and removes the hook.
 		void Teardown(Runtime& runtime, std::string_view reason)
 		{
 			Disarm(runtime, reason);
@@ -178,9 +180,8 @@ namespace TimedRideHook
 					Log::Write("TimedRideHook: MH_RemoveHook failed ({})", MH_StatusToString(status));
 			}
 
-			if (runtime.minHookInitialized)
-				MH_Uninitialize();
-
+			// MH_Uninitialize is the host's (the ASI's DllMain, or Rampagio's):
+			// it may have hooks of its own.
 			const bool wasCreated = runtime.hookCreated;
 			runtime.minHookInitialized = false;
 			runtime.hookCreated = false;
@@ -189,7 +190,7 @@ namespace TimedRideHook
 			runtime.unlockChallenge = nullptr;
 
 			if (wasCreated)
-				Log::Write("TimedRideHook: removed and uninitialized ({}).", reason);
+				Log::Write("TimedRideHook: removed ({}).", reason);
 		}
 	}
 
@@ -248,3 +249,4 @@ namespace TimedRideHook
 		Teardown(GetRuntime(), "module unload");
 	}
 }
+} // namespace ChallengeCheat

@@ -29,7 +29,7 @@
 #include <string>
 #include <string_view>
 
-namespace Localization
+namespace ChallengeCheat::Localization
 {
 	// Matches LOCALIZATION::GET_CURRENT_LANGUAGE()'s return value (same
 	// mapping as PokerCheat's Localization.h).
@@ -70,6 +70,13 @@ namespace Localization
 
 	// Re-resolves from the ini override, else the game's UI language.
 	// Script-thread only (calls a native); Current() does it lazily.
+	// The language to use: "auto" (the game's) or a code such as "de-DE"
+	// (ChallengeCheat.ini's Language key), or a Language index, -1 for
+	// the game's (a host with its own language setting). Re-resolves on
+	// the next call when it changed.
+	void SetLanguageOverride(std::string_view code);
+	void SetLanguage(int language);
+
 	void Refresh();
 	Language Current();
 

@@ -18,14 +18,10 @@
          exist in Release too. -->
     <ClCompile Include="src\keyboard.cpp" />
     <ClCompile Include="src\Config.cpp" />
-    <ClCompile Include="src\Localization.cpp" />
     <ClCompile Include="src\KeyNames.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\script.cpp" />
     <ClCompile Include="src\scriptmenu.cpp" />
-    <ClCompile Include="src\ChallengeCheat.cpp" />
-    <ClCompile Include="src\PatternScan.cpp" />
-    <ClCompile Include="src\TimedRideHook.cpp" />
     <ClCompile Include="external\minhook\src\hook.c" />
     <ClCompile Include="external\minhook\src\buffer.c" />
     <ClCompile Include="external\minhook\src\trampoline.c" />
@@ -38,17 +34,13 @@
     <ClInclude Include="external\ScriptHookSDK\inc\types.h" />
     <ClInclude Include="src\keyboard.h" />
     <ClInclude Include="src\Config.h" />
-    <ClInclude Include="src\Localization.h" />
-    <ClInclude Include="src\LocalizationData.h" />
     <ClInclude Include="src\KeyNames.h" />
     <ClInclude Include="external\inipp\inipp\inipp.h" />
     <ClInclude Include="src\script.h" />
     <ClInclude Include="src\scriptmenu.h" />
     <ClInclude Include="src\Log.h" />
     <ClInclude Include="src\ExtraNatives.h" />
-    <ClInclude Include="src\ChallengeCheat.h" />
-    <ClInclude Include="src\PatternScan.h" />
-    <ClInclude Include="src\TimedRideHook.h" />
+    <ClInclude Include="src\ChallengeCheatLog.h" />
     <ClInclude Include="external\RDR-Classes\rage\joaat.hpp" />
     <ClInclude Include="external\spdlog\include\spdlog\spdlog.h" />
     <ClInclude Include="external\spdlog\include\spdlog\sinks\basic_file_sink.h" />
@@ -58,6 +50,13 @@
     <ClInclude Include="external\minhook\src\hde\hde64.h" />
     <ClInclude Include="external\minhook\src\hde\table64.h" />
     <ClInclude Include="external\minhook\src\hde\pstdint.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The challenge logic; Rampagio links the same library. MinHook stays
+         compiled here: the library only includes its header. -->
+    <ProjectReference Include="ChallengeCheatLib.vcxproj">
+      <Project>{6C4A2E91-8B3F-4D57-A1E6-0F9B7C3D5E28}</Project>
+    </ProjectReference>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{A99F919E-1C4B-46AF-B324-1F072E00BA87}</ProjectGuid>

@@ -1,11 +1,12 @@
 #include "Localization.h"
 #include "LocalizationData.h"
-#include "Config.h"
-#include "Log.h"
+#include "ChallengeCheatLog.h"
 #include "script.h" // LOCALIZATION::GET_CURRENT_LANGUAGE()
 
 #include <array>
 
+namespace ChallengeCheat
+{
 namespace
 {
 	constexpr int kLanguageCount = static_cast<int>(Localization::Language::Count);
@@ -179,14 +180,41 @@ namespace
 	}
 }
 
+namespace
+{
+	std::string g_languageOverride = "auto";
+	int g_languageIndex = -1;
+}
+
 namespace Localization
 {
+	void SetLanguageOverride(std::string_view code)
+	{
+		if (code == g_languageOverride && g_languageIndex < 0)
+			return;
+		g_languageOverride = code;
+		g_languageIndex = -1;
+		g_resolved = false;
+	}
+
+	void SetLanguage(int language)
+	{
+		if (language == g_languageIndex)
+			return;
+		g_languageIndex = language < kLanguageCount ? language : -1;
+		g_resolved = false;
+	}
+
 	void Refresh()
 	{
-		const std::string& languageOverride = Config::Get().Language;
+		const std::string& languageOverride = g_languageOverride;
 
 		Language resolved;
-		if (TryParseOverride(languageOverride, resolved))
+		if (g_languageIndex >= 0)
+		{
+			g_current = static_cast<Language>(g_languageIndex);
+		}
+		else if (TryParseOverride(languageOverride, resolved))
 		{
 			g_current = resolved;
 		}
@@ -210,7 +238,7 @@ namespace Localization
 		}
 
 		g_resolved = true;
-		Log::Write("Localization::Refresh -> language index {} (ini override='{}')", static_cast<int>(g_current), languageOverride);
+		Log::Write("Localization::Refresh -> language index {} (override='{}', index {})", static_cast<int>(g_current), languageOverride, g_languageIndex);
 	}
 
 	Language Current()
@@ -241,3 +269,4 @@ namespace Localization
 		return g_text[static_cast<int>(msg)];
 	}
 }
+} // namespace ChallengeCheat

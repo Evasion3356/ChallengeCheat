@@ -9,6 +9,8 @@
 #include "keyboard.h"
 #include "TimedRideHook.h"
 
+#include <MinHook.h>
+
 BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 {
 	switch (reason)
@@ -33,7 +35,10 @@ BOOL APIENTRY DllMain(HMODULE hInstance, DWORD reason, LPVOID lpReserved)
 		// so MinHook's thread suspension/patching under the loader lock
 		// would only add risk.
 		if (!lpReserved)
-			TimedRideHook::Uninstall();
+		{
+			ChallengeCheat::TimedRideHook::Uninstall();
+			MH_Uninitialize();
+		}
 		break;
 	}
 	return TRUE;

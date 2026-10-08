@@ -1,11 +1,13 @@
 #include "PatternScan.h"
-#include "Log.h"
+#include "ChallengeCheatLog.h"
 
 #include <windows.h>
 #include <vector>
 #include <string>
 #include <cstring>
 
+namespace ChallengeCheat
+{
 namespace
 {
 	struct ParsedPattern
@@ -158,3 +160,4 @@ namespace PatternScan
 		return operandAddr + sizeof(std::int32_t) + displacement;
 	}
 }
+} // namespace ChallengeCheat

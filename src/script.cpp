@@ -17,6 +17,8 @@
 
 #include "scriptmenu.h" // pulls in script.h (natives/types/enums/main) and keyboard.h
 #include "Log.h"
+#include "ChallengeCheatLog.h"
+#include "Config.h"
 #include "ChallengeCheat.h"
 #include "Localization.h"
 #include "TimedRideHook.h"
@@ -52,9 +54,9 @@ namespace
 		return next > rankInfo.max ? rankInfo.max : next;
 	}
 
-	std::string FormatActionCaption(Localization::Msg verb, ChallengeCheat::Category category)
+	std::string FormatActionCaption(ChallengeCheat::Localization::Msg verb, ChallengeCheat::Category category)
 	{
-		std::string out(Localization::Text(verb));
+		std::string out(ChallengeCheat::Localization::Text(verb));
 		return out.append(" ").append(ChallengeCheat::GetDisplayName(category))
 			.append(" ").append(std::to_string(NextRank(category)));
 	}
@@ -93,13 +95,13 @@ namespace
 		// The game's own objective text for the rank a click would target.
 		menu->AddItem(new MenuItemParagraph([category]()
 		{
-			return Localization::RankObjective(static_cast<int>(category), NextRank(category)); // static data
+			return ChallengeCheat::Localization::RankObjective(static_cast<int>(category), NextRank(category)); // static data
 		}));
 		menu->AddItem(new MenuItemActionStatus(
-			[category]() { return FormatActionCaption(Localization::Msg::Advance, category); },
+			[category]() { return FormatActionCaption(ChallengeCheat::Localization::Msg::Advance, category); },
 			[category]() { return DoAdvanceRank(category); }));
 		menu->AddItem(new MenuItemActionStatus(
-			[category]() { return FormatActionCaption(Localization::Msg::Complete, category); },
+			[category]() { return FormatActionCaption(ChallengeCheat::Localization::Msg::Complete, category); },
 			[category]() { return DoCompleteChallenge(category); }));
 		g_menuController.RegisterMenu(menu); // required for MenuItemMenu::OnSelect's PushMenu to accept it
 		return menu;
@@ -122,6 +124,8 @@ namespace
 
 void ScriptMain()
 {
+	ChallengeCheat::Log::SetSink([](std::string_view line) { Log::Write("{}", line); });
+	ChallengeCheat::Localization::SetLanguageOverride(Config::Get().Language);
 	Log::Write("ChallengeCheat started");
 
 	BuildMenu();
@@ -129,7 +133,7 @@ void ScriptMain()
 
 	// Pay the AOB-scan + MinHook setup cost now, not on the first
 	// Horseman 3/6/9 click.
-	TimedRideHook::Initialize();
+	ChallengeCheat::TimedRideHook::Initialize();
 
 	bool wasLoading = false;
 	while (true)
@@ -147,7 +151,7 @@ void ScriptMain()
 		g_menuController.Update();
 
 		// Tears down the timed-ride hook once it has fired (or timed out).
-		TimedRideHook::Update();
+		ChallengeCheat::TimedRideHook::Update();
 
 		WAIT(0);
 	}

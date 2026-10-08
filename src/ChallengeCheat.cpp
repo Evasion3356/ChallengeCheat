@@ -140,7 +140,7 @@
 */
 
 #include "ChallengeCheat.h"
-#include "Log.h"
+#include "ChallengeCheatLog.h"
 #include "Localization.h"
 #include "script.h"
 #include "TimedRideHook.h"
@@ -157,6 +157,8 @@
 #include <optional>
 #include <array>
 
+namespace ChallengeCheat
+{
 namespace
 {
 	using ChallengeCheat::Category;
@@ -806,8 +808,6 @@ namespace
 	std::string g_lastFailureReason;
 }
 
-namespace ChallengeCheat
-{
 	std::string_view GetDisplayName(Category category)
 	{
 		return Localization::CategoryName(static_cast<int>(category));

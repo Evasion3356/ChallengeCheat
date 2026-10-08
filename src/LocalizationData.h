@@ -5,7 +5,7 @@
 
 #include <string_view>
 
-namespace LocalizationData
+namespace ChallengeCheat::LocalizationData
 {
 	constexpr int kCategoryCount = 9;
 	// Category enum order: Bandit, Explorer, Gambler, Herbalist, Horseman, Master Hunter,

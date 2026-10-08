@@ -515,6 +515,35 @@ every sibling project:
 bin\Debug\LogFallbackTests.exe
 ```
 
+## Library (ChallengeCheatLib.vcxproj)
+
+The challenge logic builds as a static library, `ChallengeCheatLib.vcxproj`,
+that the ASI links (`ProjectReference`). `../Rampagio` pulls this repo in as
+a git submodule and links the same library, with its own menu rows (Recovery
+> Challenges) in place of this repo's F9 menu. So the library stays
+host-neutral:
+
+- Library code is in `namespace ChallengeCheat`: `ChallengeCheat::Localization`,
+  `ChallengeCheat::LocalizationData`, `ChallengeCheat::TimedRideHook`,
+  `ChallengeCheat::PatternScan`. Rampagio has its own `Localization` and
+  `PatternScan`.
+- Library sources are `ChallengeCheat.cpp`, `ChallengeCheatLog.cpp`,
+  `Localization.cpp`, `PatternScan.cpp` and `TimedRideHook.cpp`. They don't
+  read the INI: the language comes from `Localization::SetLanguageOverride`
+  (the ASI passes `Config::Get().Language`) or `Localization::SetLanguage`
+  (an index, for a host with its own setting). They log through
+  `ChallengeCheat::Log` (`src/ChallengeCheatLog.h`), forwarded to the sink the
+  host sets; don't include `Log.h` from library sources.
+- MinHook: the library includes `MinHook.h` but doesn't build it. The ASI
+  compiles `external/minhook` itself; `TimedRideHook::Uninstall` no longer
+  calls `MH_Uninitialize`, the host's `DllMain` does, after every hook is
+  removed.
+- The host calls, on the script thread: `TimedRideHook::Initialize` once,
+  `TimedRideHook::Update` every tick, `ResetSessionState` when a loading
+  screen appears, and `SetWaitDrawCallback` with its menu draw.
+- Changing the public headers breaks Rampagio's build once it moves its
+  submodule pin.
+
 ## Source layout
 
 Mostly minimal -- almost everything goes through stock `STATS::CHAL_*`

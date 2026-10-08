@@ -54,7 +54,7 @@
 // until Uninstall(), so repeat clicks pay no scan/init cost. The detour
 // itself never tears anything down -- freeing the trampoline it is still
 // executing inside would be unsafe.
-namespace TimedRideHook
+namespace ChallengeCheat::TimedRideHook
 {
 	using ChallengeState = void;
 	using TimedRideGoalIndex = std::uint64_t;
@@ -82,7 +82,8 @@ namespace TimedRideHook
 	// next Arm()). Cheap no-op when nothing is armed.
 	void Update();
 
-	// Full teardown (disable, remove, MH_Uninitialize). Call from DllMain's DLL_PROCESS_DETACH --
-	// MinHook is process-wide and shouldn't outlive this ASI.
+	// Disables and removes the hook. Call from DllMain's DLL_PROCESS_DETACH,
+	// then MH_Uninitialize: MinHook belongs to the host (this repo's ASI or
+	// Rampagio), which may have hooks of its own.
 	void Uninstall();
 }
